@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/help"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/dewi-tim/vgmtui/internal/player"
 	"github.com/dewi-tim/vgmtui/internal/ui/components"
 )
 
@@ -49,10 +50,11 @@ type Model struct {
 	focus Focus
 
 	// UI Components
-	browser  components.Browser
-	playlist components.Playlist
-	progress components.ProgressBar
-	help     help.Model
+	browser   components.Browser
+	playlist  components.Playlist
+	progress  components.ProgressBar
+	help      help.Model
+	helpPopup components.HelpPopup
 
 	// Key bindings
 	keyMap KeyMap
@@ -61,89 +63,97 @@ type Model struct {
 	showHelp bool
 	quitting bool
 
-	// Playback state (mocked for now)
+	// Error display
+	lastError string
+	errorTime time.Time
+
+	// Playback state
 	playback     PlaybackInfo
 	currentTrack *Track
+
+	// Audio player (nil in TUI-only mode)
+	audioPlayer *player.AudioPlayer
+	playerSub   <-chan player.PlaybackInfo
+
+	// Track chip info (from real player)
+	trackChips []player.ChipInfo
 
 	// Styles
 	styles Styles
 }
 
-// New creates a new Model with default values.
+// New creates a new Model with default values (TUI-only mode).
 func New() Model {
+	return NewWithPlayer(nil)
+}
+
+// NewWithPlayer creates a new Model with an optional audio player.
+// If player is nil, the TUI runs in display-only mode.
+func NewWithPlayer(ap *player.AudioPlayer) Model {
 	// Initialize browser with home directory
 	browser := components.NewBrowser("")
 	browser.Focus() // Start with browser focused
 
-	// Initialize playlist with some mock tracks
+	// Initialize empty playlist
 	playlist := components.NewPlaylist()
-	playlist.AddTracks([]Track{
-		{
-			Path:     "/music/sonic1/green_hill.vgm",
-			Title:    "Green Hill Zone",
-			Game:     "Sonic 1",
-			System:   "Genesis",
-			Composer: "Masato Nakamura",
-			Duration: 2*time.Minute + 34*time.Second,
-		},
-		{
-			Path:     "/music/sonic1/marble.vgm",
-			Title:    "Marble Zone",
-			Game:     "Sonic 1",
-			System:   "Genesis",
-			Composer: "Masato Nakamura",
-			Duration: 3*time.Minute + 1*time.Second,
-		},
-		{
-			Path:     "/music/sonic1/starlight.vgm",
-			Title:    "Star Light Zone",
-			Game:     "Sonic 1",
-			System:   "Genesis",
-			Composer: "Masato Nakamura",
-			Duration: 1*time.Minute + 45*time.Second,
-		},
-	})
-	playlist.SetCurrentTrack(1) // Set Marble Zone as currently playing
 
-	return Model{
-		focus:    FocusBrowser,
-		browser:  browser,
-		playlist: playlist,
-		progress: components.NewProgressBar(),
-		help:     help.New(),
-		keyMap:   DefaultKeyMap(),
-		styles:   DefaultStyles(),
+	m := Model{
+		focus:       FocusBrowser,
+		browser:     browser,
+		playlist:    playlist,
+		progress:    components.NewProgressBar(),
+		help:        help.New(),
+		helpPopup:   components.NewHelpPopup(),
+		keyMap:      DefaultKeyMap(),
+		styles:      DefaultStyles(),
+		audioPlayer: ap,
 		playback: PlaybackInfo{
 			State:      StateStopped,
-			Duration:   3*time.Minute + 1*time.Second, // 3:01 mock duration
 			TotalLoops: 2,
 		},
-		currentTrack: &Track{
-			Title:    "Marble Zone",
-			Game:     "Sonic the Hedgehog",
-			System:   "Sega Genesis",
-			Composer: "Masato Nakamura",
-			Duration: 3*time.Minute + 1*time.Second,
-		},
 	}
+
+	// Subscribe to player updates if player is available
+	if ap != nil {
+		m.playerSub = ap.Subscribe()
+	}
+
+	return m
 }
 
 // Init returns the initial command to run.
 func (m Model) Init() tea.Cmd {
-	// Start a tick for updating the progress bar during playback
-	// Also initialize the browser
-	return tea.Batch(
-		tickCmd(),
+	cmds := []tea.Cmd{
 		m.browser.Init(),
-	)
+	}
+
+	// If we have a real player, start listening for playback updates
+	if m.playerSub != nil {
+		cmds = append(cmds, listenForPlayback(m.playerSub))
+	}
+
+	return tea.Batch(cmds...)
 }
 
-// tickCmd returns a command that ticks every 100ms for smooth progress updates.
-func tickCmd() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-		return TickMsg(t)
-	})
+// listenForPlayback returns a command that listens for playback info updates.
+func listenForPlayback(sub <-chan player.PlaybackInfo) tea.Cmd {
+	return func() tea.Msg {
+		info, ok := <-sub
+		if !ok {
+			// Channel closed
+			return nil
+		}
+		return PlayerTickMsg{Info: info}
+	}
 }
+
+// PlayerTickMsg is sent when the audio player provides a playback update.
+type PlayerTickMsg struct {
+	Info player.PlaybackInfo
+}
+
+// TrackEndedMsg is sent when the current track finishes playing.
+type TrackEndedMsg struct{}
 
 // Width returns the current window width.
 func (m Model) Width() int {
@@ -173,4 +183,14 @@ func (m Model) IsPaused() bool {
 // IsStopped returns true if playback is stopped.
 func (m Model) IsStopped() bool {
 	return m.playback.State == StateStopped
+}
+
+// HasPlayer returns true if a real audio player is available.
+func (m Model) HasPlayer() bool {
+	return m.audioPlayer != nil
+}
+
+// ChipInfo returns the chip information for the current track.
+func (m Model) ChipInfo() []player.ChipInfo {
+	return m.trackChips
 }
