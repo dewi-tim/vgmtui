@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/dewi-tim/vgmtui/internal/library"
 	"github.com/dewi-tim/vgmtui/internal/player"
 	"github.com/dewi-tim/vgmtui/internal/ui/components"
 )
@@ -104,9 +105,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		browserInnerWidth := libraryWidth - 2
 		browserInnerHeight := mainHeight - 3 // border(2) + title(1)
 		m.browser.SetSize(browserInnerWidth, browserInnerHeight)
+		if m.libBrowser != nil {
+			m.libBrowser.SetSize(browserInnerWidth, browserInnerHeight)
+		}
 
 		// Right pane layout (from renderRightPane)
-		progressHeight := 5
+		progressHeight := 4  // No title now
 		trackInfoHeight := 6
 		playlistHeight := mainHeight - progressHeight - trackInfoHeight
 
@@ -142,6 +146,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 		return m, tea.Batch(cmds...)
+
+	case components.LibBrowserScanCompleteMsg:
+		// Library scan completed
+		if m.libBrowser != nil {
+			var cmd tea.Cmd
+			m.libBrowser, cmd = m.libBrowser.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case components.LibTrackSelectedMsg:
+		// Single track selected from library
+		if m.audioPlayer != nil {
+			return m, loadLibTrackMetadata(m.audioPlayer, msg.Track)
+		}
+		// Mock mode
+		m.currentTrack = &Track{
+			Path:     msg.Track.Path,
+			Title:    msg.Track.Title,
+			Game:     msg.Track.Game,
+			System:   msg.Track.System,
+			Composer: msg.Track.Composer,
+			Duration: msg.Track.Duration,
+		}
+		m.playlist.AddTrack(components.Track{
+			Path:     msg.Track.Path,
+			Title:    msg.Track.Title,
+			Game:     msg.Track.Game,
+			System:   msg.Track.System,
+			Composer: msg.Track.Composer,
+			Duration: msg.Track.Duration,
+		})
+		return m, nil
+
+	case components.LibTracksSelectedMsg:
+		// Multiple tracks selected (add all from game/system)
+		for _, t := range msg.Tracks {
+			m.playlist.AddTrack(components.Track{
+				Path:     t.Path,
+				Title:    t.Title,
+				Game:     t.Game,
+				System:   t.System,
+				Composer: t.Composer,
+				Duration: t.Duration,
+			})
+		}
+		return m, nil
 
 	case components.FileSelectedMsg:
 		// A file was selected in the browser
@@ -401,12 +454,20 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Cycle focus between panels
 		if m.focus == FocusBrowser {
 			m.focus = FocusPlaylist
-			m.browser.Blur()
+			if m.useLibrary && m.libBrowser != nil {
+				m.libBrowser.Blur()
+			} else {
+				m.browser.Blur()
+			}
 			m.playlist.Focus()
 		} else {
 			m.focus = FocusBrowser
 			m.playlist.Blur()
-			m.browser.Focus()
+			if m.useLibrary && m.libBrowser != nil {
+				m.libBrowser.Focus()
+			} else {
+				m.browser.Focus()
+			}
 		}
 		return m, nil
 	}
@@ -414,11 +475,19 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Panel-specific key handling
 	switch m.focus {
 	case FocusBrowser:
-		// Forward navigation keys to browser
-		var cmd tea.Cmd
-		m.browser, cmd = m.browser.Update(msg)
-		if cmd != nil {
-			return m, cmd
+		// Forward navigation keys to appropriate browser
+		if m.useLibrary && m.libBrowser != nil {
+			var cmd tea.Cmd
+			m.libBrowser, cmd = m.libBrowser.Update(msg)
+			if cmd != nil {
+				return m, cmd
+			}
+		} else {
+			var cmd tea.Cmd
+			m.browser, cmd = m.browser.Update(msg)
+			if cmd != nil {
+				return m, cmd
+			}
 		}
 	case FocusPlaylist:
 		// Check for playlist-specific actions first
@@ -556,4 +625,44 @@ func defaultString(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// loadLibTrackMetadata returns a command that loads track metadata from a library track.
+func loadLibTrackMetadata(ap *player.AudioPlayer, t library.Track) tea.Cmd {
+	_ = ap
+	return func() tea.Msg {
+		// Read full metadata using a temporary player instance
+		track, err := player.ReadTrackMetadata(t.Path)
+		if err != nil {
+			return tea.Batch(
+				func() tea.Msg {
+					return ErrorMsg{Err: err}
+				},
+				func() tea.Msg {
+					return TrackMetadataLoadedMsg{
+						Track: Track{
+							Path:     t.Path,
+							Title:    t.Title,
+							Game:     t.Game,
+							System:   t.System,
+							Composer: t.Composer,
+							Duration: t.Duration,
+						},
+					}
+				},
+			)()
+		}
+
+		return TrackMetadataLoadedMsg{
+			Track: Track{
+				Path:     track.Path,
+				Title:    defaultString(track.Title, t.Title),
+				Game:     defaultString(track.Game, t.Game),
+				System:   defaultString(track.System, t.System),
+				Composer: defaultString(track.Composer, t.Composer),
+				Duration: track.Duration,
+			},
+			Chips: track.Chips,
+		}
+	}
 }

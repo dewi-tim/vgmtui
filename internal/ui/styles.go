@@ -185,3 +185,27 @@ func (s Styles) RenderPanel(title, content string, focused bool, width, height i
 	// Apply border - PanelStyle now expects outer dimensions
 	return s.PanelStyle(focused, width, height).Render(panelContent)
 }
+
+// RenderProgressPanel renders content in a panel without a title.
+// width and height are the TOTAL outer dimensions including border.
+func (s Styles) RenderProgressPanel(content string, width, height int) string {
+	// Inner height after border (2 lines) - no title
+	contentMaxHeight := height - 2
+	if contentMaxHeight < 1 {
+		contentMaxHeight = 1
+	}
+
+	// Truncate content if it exceeds the available height
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > contentMaxHeight {
+		contentLines = contentLines[:contentMaxHeight]
+	}
+	// Pad content to fill available space
+	for len(contentLines) < contentMaxHeight {
+		contentLines = append(contentLines, "")
+	}
+	content = strings.Join(contentLines, "\n")
+
+	// Apply border - not focused, no title
+	return s.PanelStyle(false, width, height).Render(content)
+}

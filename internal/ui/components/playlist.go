@@ -141,7 +141,7 @@ func DefaultPlaylistStyles() PlaylistStyles {
 // NewPlaylist creates a new Playlist component.
 func NewPlaylist() Playlist {
 	columns := []table.Column{
-		{Title: "Duration", Width: 8},
+		{Title: "Duration", Width: 10}, // Extra width for "> " indicator
 		{Title: "Title", Width: 20},
 		{Title: "Game", Width: 15},
 	}
@@ -218,13 +218,13 @@ func (p *Playlist) SetSize(width, height int) {
 	p.height = height
 
 	// Calculate column widths based on available space
-	// Duration: 8, Title: flexible, Game: ~30%
+	// Duration: 10 (includes "> " indicator), Title: flexible, Game: ~30%
 	availableWidth := width - 6 // Account for borders and padding
 	if availableWidth < 20 {
 		availableWidth = 20
 	}
 
-	durationWidth := 8
+	durationWidth := 10 // Includes space for "> " indicator
 	gameWidth := availableWidth * 30 / 100
 	if gameWidth < 10 {
 		gameWidth = 10
@@ -371,23 +371,30 @@ func (p Playlist) Tracks() []Track {
 
 // updateTableRows syncs the table rows with the tracks slice.
 func (p *Playlist) updateTableRows() {
+	// Save cursor position before updating rows
+	savedCursor := p.table.Cursor()
+
 	rows := make([]table.Row, len(p.tracks))
 	for i, track := range p.tracks {
-		// Format duration
+		// Format duration with playing indicator
 		duration := formatDuration(track.Duration)
-
-		// Add playing indicator
-		title := track.Title
 		if i == p.current {
-			title = "> " + title
+			// Use play symbol as indicator (visible in all terminals)
+			duration = "> " + duration
 		} else {
-			title = "  " + title
+			duration = "  " + duration
 		}
 
-		// Truncate title if needed (will be handled by table)
-		rows[i] = table.Row{duration, title, track.Game}
+		rows[i] = table.Row{duration, track.Title, track.Game}
 	}
 	p.table.SetRows(rows)
+
+	// Restore cursor position if still valid
+	if savedCursor >= 0 && savedCursor < len(rows) {
+		p.table.SetCursor(savedCursor)
+	} else if len(rows) > 0 {
+		p.table.SetCursor(0)
+	}
 }
 
 // Title returns the title for the playlist panel.

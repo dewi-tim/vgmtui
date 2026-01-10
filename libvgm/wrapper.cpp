@@ -327,6 +327,9 @@ int vgm_player_load(VgmPlayer* p, const char* path) {
     extractTags(p);
     generateFormatString(p);
 
+    // Enumerate chips (chip names available after load, core names after start)
+    enumerateChips(p);
+
     return VGM_OK;
 }
 

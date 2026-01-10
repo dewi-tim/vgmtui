@@ -187,8 +187,16 @@ func (m Model) renderTooSmall() string {
 func (m Model) renderLibrary(width, height int) string {
 	focused := m.focus == FocusBrowser
 
-	// Render the browser component
-	content := m.browser.View()
+	// Render the appropriate browser component
+	var content string
+	var title string
+	if m.useLibrary && m.libBrowser != nil {
+		content = m.libBrowser.View()
+		title = "Library"
+	} else {
+		content = m.browser.View()
+		title = "Files"
+	}
 
 	// Calculate content height (panel height minus borders and title)
 	// Border takes 2 lines (top + bottom), title takes 1 line
@@ -201,7 +209,7 @@ func (m Model) renderLibrary(width, height int) string {
 	content = constrainContentHeight(content, contentHeight)
 
 	// Pass full outer dimensions - RenderPanel handles inner calculation
-	return m.styles.RenderPanel("Library", content, focused, width, height)
+	return m.styles.RenderPanel(title, content, focused, width, height)
 }
 
 // constrainContentHeight truncates content to fit within the specified height.
@@ -224,7 +232,7 @@ func constrainContentHeight(content string, maxHeight int) string {
 // renderRightPane renders the right side containing playlist, track info, and progress.
 func (m Model) renderRightPane(width, height int) string {
 	// Fixed heights for bottom panels (like termusic's Constraint::Length)
-	progressHeight := 5  // Status line + progress bar + border(2) + title(1)
+	progressHeight := 4  // Status line + progress bar + border(2), no title
 	trackInfoHeight := 6 // Track info with border
 
 	// Playlist takes remaining space (like termusic's Constraint::Min)
@@ -257,6 +265,9 @@ func (m Model) renderPlaylist(width, height int) string {
 func (m Model) renderTrackInfo(width, height int) string {
 	content := strings.Builder{}
 
+	// Fixed label width for alignment
+	const labelWidth = 9 // "Composer:" is longest at 9 chars
+
 	if m.currentTrack != nil {
 		// Title
 		title := m.currentTrack.Title
@@ -264,7 +275,7 @@ func (m Model) renderTrackInfo(width, height int) string {
 			title = "(Unknown)"
 		}
 		content.WriteString(fmt.Sprintf("%s %s\n",
-			m.styles.TextMuted.Render("Track:"),
+			m.styles.TextMuted.Render(fmt.Sprintf("%*s", labelWidth, "Track:")),
 			m.styles.TextBold.Render(title)))
 
 		// Game
@@ -273,7 +284,7 @@ func (m Model) renderTrackInfo(width, height int) string {
 			game = "(Unknown)"
 		}
 		content.WriteString(fmt.Sprintf("%s %s\n",
-			m.styles.TextMuted.Render("Game:"),
+			m.styles.TextMuted.Render(fmt.Sprintf("%*s", labelWidth, "Game:")),
 			m.styles.Text.Render(game)))
 
 		// System and Chips on same line
@@ -281,11 +292,9 @@ func (m Model) renderTrackInfo(width, height int) string {
 		if system == "" {
 			system = "(Unknown)"
 		}
-
-		// Build chip list from trackChips if available
 		chipList := m.formatChipList()
-		content.WriteString(fmt.Sprintf("%s %s  %s %s\n",
-			m.styles.TextMuted.Render("System:"),
+		content.WriteString(fmt.Sprintf("%s %-12s %s %s\n",
+			m.styles.TextMuted.Render(fmt.Sprintf("%*s", labelWidth, "System:")),
 			m.styles.Text.Render(system),
 			m.styles.TextMuted.Render("Chips:"),
 			m.styles.Text.Render(chipList)))
@@ -296,7 +305,7 @@ func (m Model) renderTrackInfo(width, height int) string {
 			composer = "(Unknown)"
 		}
 		content.WriteString(fmt.Sprintf("%s %s",
-			m.styles.TextMuted.Render("Composer:"),
+			m.styles.TextMuted.Render(fmt.Sprintf("%*s", labelWidth, "Composer:")),
 			m.styles.Text.Render(composer)))
 	} else {
 		content.WriteString(m.styles.TextMuted.Render("No track loaded"))
@@ -323,8 +332,6 @@ func (m Model) formatChipList() string {
 
 // renderProgress renders the progress bar and playback status.
 func (m Model) renderProgress(width, height int) string {
-	content := strings.Builder{}
-
 	// Status indicator
 	var statusStyle lipgloss.Style
 	var statusText string
@@ -345,26 +352,33 @@ func (m Model) renderProgress(width, height int) string {
 		statusIcon = "[]"
 	}
 
-	// First line: status and loop info
+	// Loop info
 	loopInfo := ""
 	if m.playback.TotalLoops > 0 {
 		loopInfo = fmt.Sprintf(" | Loop %d/%d", m.playback.CurrentLoop+1, m.playback.TotalLoops)
 	}
 
-	content.WriteString(fmt.Sprintf("%s %s%s\n",
+	// Status line
+	statusLine := fmt.Sprintf("%s %s%s",
 		statusStyle.Render(statusIcon),
 		statusStyle.Render(statusText),
-		m.styles.TextMuted.Render(loopInfo)))
+		m.styles.TextMuted.Render(loopInfo))
 
-	// Second line: progress bar (adjust width for border and padding)
-	m.progress.SetWidth(width - 6)
+	// Progress bar - use full inner width (subtract borders only)
+	innerWidth := width - 2
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
+	m.progress.SetWidth(innerWidth)
 	m.progress.SetElapsed(m.playback.Position)
 	m.progress.SetDuration(m.playback.Duration)
-	content.WriteString(m.progress.View())
+	progressBar := m.progress.View()
 
-	// Use RenderPanel to get complete borders like other panels
-	// Pass full outer dimensions - RenderPanel handles inner calculation
-	return m.styles.RenderPanel("Progress", content.String(), false, width, height)
+	// Build content without title - just status and progress bar
+	content := lipgloss.JoinVertical(lipgloss.Left, statusLine, progressBar)
+
+	// Render with border but no title
+	return m.styles.RenderProgressPanel(content, width, height)
 }
 
 // renderFooter renders the help/key hints footer.

@@ -561,8 +561,15 @@ func ReadTrackMetadata(path string) (Track, error) {
 		track.LoopPoint = time.Duration(loopSeconds * float64(time.Second))
 	}
 
-	// Note: Chip info is not available until Start() is called,
-	// but for metadata-only queries we don't need it.
+	// Chip info (now available after load)
+	chipCount := uint32(C.vgm_player_get_chip_count(handle))
+	track.Chips = make([]ChipInfo, chipCount)
+	for i := uint32(0); i < chipCount; i++ {
+		track.Chips[i] = ChipInfo{
+			Name: C.GoString(C.vgm_player_get_chip_name(handle, C.uint32_t(i))),
+			Core: C.GoString(C.vgm_player_get_chip_core(handle, C.uint32_t(i))),
+		}
+	}
 
 	return track, nil
 }

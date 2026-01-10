@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/dewi-tim/vgmtui/internal/library"
 	"github.com/dewi-tim/vgmtui/internal/player"
 	"github.com/dewi-tim/vgmtui/internal/ui/components"
 )
@@ -50,11 +53,14 @@ type Model struct {
 	focus Focus
 
 	// UI Components
-	browser   components.Browser
-	playlist  components.Playlist
-	progress  components.ProgressBar
-	help      help.Model
-	helpPopup components.HelpPopup
+	browser    components.Browser      // File browser (fallback mode)
+	libBrowser *components.LibBrowser  // Library browser (main mode)
+	lib        *library.Library        // Music library
+	useLibrary bool                    // Whether to use library browser
+	playlist   components.Playlist
+	progress   components.ProgressBar
+	help       help.Model
+	helpPopup  components.HelpPopup
 
 	// Key bindings
 	keyMap KeyMap
@@ -90,9 +96,35 @@ func New() Model {
 // NewWithPlayer creates a new Model with an optional audio player.
 // If player is nil, the TUI runs in display-only mode.
 func NewWithPlayer(ap *player.AudioPlayer) Model {
-	// Initialize browser with home directory
+	// Determine library root - prefer ~/VGM if it exists
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	vgmDir := filepath.Join(home, "VGM")
+	useLibrary := false
+
+	// Check if ~/VGM exists
+	if home != "" {
+		if info, err := os.Stat(vgmDir); err == nil && info.IsDir() {
+			useLibrary = true
+		}
+	}
+
+	// Initialize library and library browser if ~/VGM exists
+	var lib *library.Library
+	var libBrowser *components.LibBrowser
+	if useLibrary {
+		lib = library.New(vgmDir)
+		libBrowser = components.NewLibBrowser(lib)
+		libBrowser.Focus() // Start with library focused
+	}
+
+	// Initialize browser with home directory (fallback - always created for switching)
 	browser := components.NewBrowser("")
-	browser.Focus() // Start with browser focused
+	if !useLibrary {
+		browser.Focus() // Only focus if not using library
+	}
 
 	// Initialize empty playlist
 	playlist := components.NewPlaylist()
@@ -100,6 +132,9 @@ func NewWithPlayer(ap *player.AudioPlayer) Model {
 	m := Model{
 		focus:       FocusBrowser,
 		browser:     browser,
+		libBrowser:  libBrowser,
+		lib:         lib,
+		useLibrary:  useLibrary,
 		playlist:    playlist,
 		progress:    components.NewProgressBar(),
 		help:        help.New(),
@@ -123,8 +158,13 @@ func NewWithPlayer(ap *player.AudioPlayer) Model {
 
 // Init returns the initial command to run.
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{
-		m.browser.Init(),
+	var cmds []tea.Cmd
+
+	// Initialize browser based on mode
+	if m.useLibrary && m.libBrowser != nil {
+		cmds = append(cmds, m.libBrowser.Init())
+	} else {
+		cmds = append(cmds, m.browser.Init())
 	}
 
 	// If we have a real player, start listening for playback updates
