@@ -16,6 +16,7 @@ type HelpPopup struct {
 	visible  bool
 	width    int
 	height   int
+	keyMap   HelpKeyMap
 
 	// Styles
 	borderStyle   lipgloss.Style
@@ -71,6 +72,7 @@ func NewHelpPopup() HelpPopup {
 		visible:  false,
 		width:    60,
 		height:   24,
+		keyMap:   DefaultHelpKeyMap(),
 		borderStyle: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#7571F9")),
@@ -97,21 +99,19 @@ func (h HelpPopup) Update(msg tea.Msg) (HelpPopup, tea.Cmd) {
 		return h, nil
 	}
 
-	keyMap := DefaultHelpKeyMap()
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, keyMap.Close):
+		case key.Matches(msg, h.keyMap.Close):
 			h.visible = false
 			return h, nil
-		case key.Matches(msg, keyMap.Up):
+		case key.Matches(msg, h.keyMap.Up):
 			h.viewport.ScrollUp(1)
-		case key.Matches(msg, keyMap.Down):
+		case key.Matches(msg, h.keyMap.Down):
 			h.viewport.ScrollDown(1)
-		case key.Matches(msg, keyMap.PageUp):
+		case key.Matches(msg, h.keyMap.PageUp):
 			h.viewport.PageUp()
-		case key.Matches(msg, keyMap.PageDown):
+		case key.Matches(msg, h.keyMap.PageDown):
 			h.viewport.PageDown()
 		}
 	}
@@ -127,29 +127,9 @@ func (h HelpPopup) View() string {
 		return ""
 	}
 
-	content := h.buildHelpContent()
-	h.viewport.SetContent(content)
-
-	// Calculate popup dimensions
-	popupWidth := h.width
-	if popupWidth > h.width-4 {
-		popupWidth = h.width - 4
-	}
-	if popupWidth < 40 {
-		popupWidth = 40
-	}
-
-	popupHeight := h.height
-	if popupHeight > h.height-4 {
-		popupHeight = h.height - 4
-	}
-	if popupHeight < 15 {
-		popupHeight = 15
-	}
-
-	// Update viewport size
-	h.viewport.Width = popupWidth - 4
-	h.viewport.Height = popupHeight - 4
+	// Use the dimensions set by SetSize (not calculated here to keep View pure)
+	popupWidth := h.viewport.Width + 4
+	popupHeight := h.viewport.Height + 4
 
 	// Build the popup
 	title := h.titleStyle.Render(" Help ")
@@ -237,6 +217,8 @@ func (h HelpPopup) buildHelpContent() string {
 	addKey("PgUp/Dn", "Page up/down")
 	addKey("Enter/l", "Open directory/select file")
 	addKey("Backspace/h", "Go to parent directory")
+	addKey("a", "Add all from game/system")
+	addKey("L", "Add all files from directory")
 	addKey(".", "Toggle hidden files")
 
 	// Playlist
@@ -247,6 +229,9 @@ func (h HelpPopup) buildHelpContent() string {
 	addKey("Enter/l", "Play selected track")
 	addKey("d", "Remove selected track")
 	addKey("D", "Clear playlist")
+	addKey("J/K", "Move track down/up")
+	addKey("r", "Shuffle playlist")
+	addKey("m", "Cycle loop mode")
 
 	return b.String()
 }
@@ -280,6 +265,8 @@ func (h *HelpPopup) SetSize(width, height int) {
 // Show makes the help popup visible.
 func (h *HelpPopup) Show() {
 	h.visible = true
+	// Set content when showing (not in View) for efficiency
+	h.viewport.SetContent(h.buildHelpContent())
 	h.viewport.GotoTop()
 }
 

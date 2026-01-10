@@ -12,11 +12,6 @@ import (
 	"github.com/dewi-tim/vgmtui/internal/ui/components"
 )
 
-// browserSelectNameMsg is used internally to select a specific entry by name.
-type browserSelectNameMsg struct {
-	name string
-}
-
 // Message types for the TUI.
 type (
 	// TickMsg is sent periodically to update the progress bar (mock mode only).
@@ -72,6 +67,7 @@ type (
 	TrackMetadataLoadedMsg struct {
 		Track Track
 		Chips []player.ChipInfo
+		Err   error // Optional error (track still added with partial info)
 	}
 
 	// ErrorMsg is sent when an error occurs that should be displayed to the user.
@@ -81,6 +77,11 @@ type (
 
 	// ClearErrorMsg is sent to clear the error display.
 	ClearErrorMsg struct{}
+
+	// TrackStartedMsg is sent when a track successfully starts playing.
+	TrackStartedMsg struct {
+		Path string
+	}
 )
 
 // Update handles messages and updates the model.
@@ -91,7 +92,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.help.Width = msg.Width
 
 		// Match the layout calculations from View()
 		footerHeight := 1
@@ -144,6 +144,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.browser, cmd = m.browser.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case components.LibBrowserScanStartMsg:
+		// Library scan started
+		if m.libBrowser != nil {
+			var cmd tea.Cmd
+			m.libBrowser, cmd = m.libBrowser.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -213,21 +224,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case components.FilesSelectedMsg:
+		// Multiple files selected (add all from directory)
+		if m.audioPlayer != nil {
+			// Load metadata for all files
+			var cmds []tea.Cmd
+			for _, path := range msg.Paths {
+				cmds = append(cmds, loadTrackMetadata(m.audioPlayer, path))
+			}
+			return m, tea.Batch(cmds...)
+		}
+		// Mock mode: add all files with basic info
+		for _, path := range msg.Paths {
+			m.playlist.AddTrack(components.Track{
+				Path:     path,
+				Title:    filepath.Base(path),
+				Game:     "(no player)",
+				System:   "(unknown)",
+				Composer: "(unknown)",
+				Duration: 0,
+			})
+		}
+		return m, nil
+
 	case TrackMetadataLoadedMsg:
 		// Track metadata has been loaded from the player
 		// Add to playlist and set as current display
 		m.playlist.AddTrack(msg.Track)
-		m.currentTrack = &msg.Track
+		// Get the track from the playlist (not the message) to ensure pointer consistency
+		idx := m.playlist.Len() - 1
+		m.currentTrack = m.playlist.GetTrack(idx)
 		m.trackChips = msg.Chips
+		// Show error if there was one (track was still added with partial info)
+		if msg.Err != nil {
+			m.lastError = msg.Err.Error()
+			m.errorTime = time.Now()
+			return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+				return ClearErrorMsg{}
+			})
+		}
 		return m, nil
 
 	case components.DirChangedMsg:
 		// Directory changed - nothing special to do for now
-		return m, nil
-
-	case browserSelectNameMsg:
-		// Internal message to select a specific entry by name
-		m.browser.HandleSelectName(msg.name)
 		return m, nil
 
 	case PlayerTickMsg:
@@ -261,13 +300,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case TrackEndedMsg:
-		// Current track finished, try to play next
+		// Current track finished - behavior depends on loop mode
 		if m.audioPlayer != nil {
-			nextIdx := m.playlist.NextTrack()
-			if nextIdx >= 0 {
-				if track := m.playlist.GetTrack(nextIdx); track != nil {
-					m.currentTrack = track
-					return m, playTrack(m.audioPlayer, track.Path)
+			loopMode := m.playlist.LoopMode()
+
+			switch loopMode {
+			case components.LoopOne:
+				// Repeat the current track
+				if m.currentTrack != nil {
+					return m, playTrack(m.audioPlayer, m.currentTrack.Path)
+				}
+			case components.LoopAll:
+				// Try next track, wrap around at end
+				nextIdx := m.playlist.NextTrack()
+				if nextIdx >= 0 {
+					if track := m.playlist.GetTrack(nextIdx); track != nil {
+						m.currentTrack = track
+						return m, playTrack(m.audioPlayer, track.Path)
+					}
+				} else if m.playlist.Len() > 0 {
+					// Wrap around to first track
+					m.playlist.SetCurrentTrack(0)
+					if track := m.playlist.GetTrack(0); track != nil {
+						m.currentTrack = track
+						return m, playTrack(m.audioPlayer, track.Path)
+					}
+				}
+			default: // LoopNone
+				// Try next track, stop at end
+				nextIdx := m.playlist.NextTrack()
+				if nextIdx >= 0 {
+					if track := m.playlist.GetTrack(nextIdx); track != nil {
+						m.currentTrack = track
+						return m, playTrack(m.audioPlayer, track.Path)
+					}
 				}
 			}
 		}
@@ -287,34 +353,66 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case NextTrackMsg:
 		// Advance to next track in playlist
+		if m.playlist.Len() == 0 {
+			return m, nil
+		}
+		nextIdx := m.playlist.NextTrack()
+		if nextIdx < 0 {
+			// At end of playlist
+			m.playback.Position = 0
+			m.playback.CurrentLoop = 0
+			return m, nil
+		}
+		track := m.playlist.GetTrack(nextIdx)
+		if track == nil {
+			return m, nil
+		}
+		m.currentTrack = track
 		if m.audioPlayer != nil {
 			m.audioPlayer.Stop()
-			nextIdx := m.playlist.NextTrack()
-			if nextIdx >= 0 {
-				if track := m.playlist.GetTrack(nextIdx); track != nil {
-					m.currentTrack = track
-					return m, playTrack(m.audioPlayer, track.Path)
-				}
-			}
+			return m, playTrack(m.audioPlayer, track.Path)
 		}
+		// Mock mode
+		m.playback.State = StatePlaying
 		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
+		m.playback.Duration = track.Duration
 		return m, nil
 
 	case PrevTrackMsg:
 		// Go to previous track in playlist
-		if m.audioPlayer != nil {
-			m.audioPlayer.Stop()
-			prevIdx := m.playlist.PrevTrack()
-			if prevIdx >= 0 {
-				if track := m.playlist.GetTrack(prevIdx); track != nil {
+		if m.playlist.Len() == 0 {
+			return m, nil
+		}
+		prevIdx := m.playlist.PrevTrack()
+		if prevIdx < 0 {
+			// At start of playlist - restart current track
+			currentIdx := m.playlist.CurrentIndex()
+			if currentIdx >= 0 {
+				track := m.playlist.GetTrack(currentIdx)
+				if track != nil {
 					m.currentTrack = track
-					return m, playTrack(m.audioPlayer, track.Path)
+					if m.audioPlayer != nil {
+						m.audioPlayer.Stop()
+						return m, playTrack(m.audioPlayer, track.Path)
+					}
+					m.playback.Position = 0
 				}
 			}
+			return m, nil
 		}
+		track := m.playlist.GetTrack(prevIdx)
+		if track == nil {
+			return m, nil
+		}
+		m.currentTrack = track
+		if m.audioPlayer != nil {
+			m.audioPlayer.Stop()
+			return m, playTrack(m.audioPlayer, track.Path)
+		}
+		// Mock mode
+		m.playback.State = StatePlaying
 		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
+		m.playback.Duration = track.Duration
 		return m, nil
 
 	case StopMsg:
@@ -397,6 +495,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastError = ""
 		}
 		return m, nil
+
+	case TrackStartedMsg:
+		// Track successfully started playing
+		// The playback state will be updated via PlayerTickMsg
+		return m, nil
 	}
 
 	return m, tea.Batch(cmds...)
@@ -419,34 +522,37 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.togglePlayPause()
 
 	case key.Matches(msg, m.keyMap.NextTrack):
-		// Placeholder
-		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
-		return m, nil
+		return m, func() tea.Msg { return NextTrackMsg{} }
 
 	case key.Matches(msg, m.keyMap.PrevTrack):
-		// Placeholder
-		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
-		return m, nil
+		return m, func() tea.Msg { return PrevTrackMsg{} }
 
 	case key.Matches(msg, m.keyMap.Stop):
-		m.playback.State = StateStopped
-		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
-		return m, nil
+		return m, func() tea.Msg { return StopMsg{} }
 
 	case key.Matches(msg, m.keyMap.SeekForward):
-		m.playback.Position += 5 * time.Second
-		if m.playback.Position > m.playback.Duration {
-			m.playback.Position = m.playback.Duration
+		return m, func() tea.Msg { return SeekMsg{Delta: 5 * time.Second} }
+
+	case key.Matches(msg, m.keyMap.SeekBackward):
+		return m, func() tea.Msg { return SeekMsg{Delta: -5 * time.Second} }
+
+	case key.Matches(msg, m.keyMap.VolumeUp):
+		if m.audioPlayer != nil {
+			m.volume += 0.05
+			if m.volume > 1.0 {
+				m.volume = 1.0
+			}
+			m.audioPlayer.SetVolume(m.volume)
 		}
 		return m, nil
 
-	case key.Matches(msg, m.keyMap.SeekBackward):
-		m.playback.Position -= 5 * time.Second
-		if m.playback.Position < 0 {
-			m.playback.Position = 0
+	case key.Matches(msg, m.keyMap.VolumeDown):
+		if m.audioPlayer != nil {
+			m.volume -= 0.05
+			if m.volume < 0.0 {
+				m.volume = 0.0
+			}
+			m.audioPlayer.SetVolume(m.volume)
 		}
 		return m, nil
 
@@ -515,6 +621,18 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, playlistKeyMap.Clear):
 			m.playlist.Clear()
 			return m, nil
+		case key.Matches(msg, playlistKeyMap.MoveUp):
+			m.playlist.MoveUp()
+			return m, nil
+		case key.Matches(msg, playlistKeyMap.MoveDown):
+			m.playlist.MoveDown()
+			return m, nil
+		case key.Matches(msg, playlistKeyMap.Shuffle):
+			m.playlist.Shuffle()
+			return m, nil
+		case key.Matches(msg, playlistKeyMap.LoopMode):
+			m.playlist.CycleLoopMode()
+			return m, nil
 		default:
 			// Forward navigation keys to playlist
 			var cmd tea.Cmd
@@ -574,21 +692,15 @@ func loadTrackMetadata(ap *player.AudioPlayer, path string) tea.Cmd {
 		// Read metadata using a temporary player instance
 		track, err := player.ReadTrackMetadata(path)
 		if err != nil {
-			// Return error along with basic track info
-			return tea.Batch(
-				func() tea.Msg {
-					return ErrorMsg{Err: err}
+			// Return track with partial info and include the error
+			return TrackMetadataLoadedMsg{
+				Track: Track{
+					Path:  path,
+					Title: filepath.Base(path),
+					Game:  "(load error)",
 				},
-				func() tea.Msg {
-					return TrackMetadataLoadedMsg{
-						Track: Track{
-							Path:  path,
-							Title: filepath.Base(path),
-							Game:  "(load error)",
-						},
-					}
-				},
-			)()
+				Err: err,
+			}
 		}
 
 		// Convert player.Track to components.Track
@@ -615,7 +727,7 @@ func playTrack(ap *player.AudioPlayer, path string) tea.Cmd {
 		if err := ap.Play(); err != nil {
 			return ErrorMsg{Err: err}
 		}
-		return nil
+		return TrackStartedMsg{Path: path}
 	}
 }
 
@@ -634,23 +746,18 @@ func loadLibTrackMetadata(ap *player.AudioPlayer, t library.Track) tea.Cmd {
 		// Read full metadata using a temporary player instance
 		track, err := player.ReadTrackMetadata(t.Path)
 		if err != nil {
-			return tea.Batch(
-				func() tea.Msg {
-					return ErrorMsg{Err: err}
+			// Return track with library info and include the error
+			return TrackMetadataLoadedMsg{
+				Track: Track{
+					Path:     t.Path,
+					Title:    t.Title,
+					Game:     t.Game,
+					System:   t.System,
+					Composer: t.Composer,
+					Duration: t.Duration,
 				},
-				func() tea.Msg {
-					return TrackMetadataLoadedMsg{
-						Track: Track{
-							Path:     t.Path,
-							Title:    t.Title,
-							Game:     t.Game,
-							System:   t.System,
-							Composer: t.Composer,
-							Duration: t.Duration,
-						},
-					}
-				},
-			)()
+				Err: err,
+			}
 		}
 
 		return TrackMetadataLoadedMsg{
