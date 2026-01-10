@@ -1,0 +1,151 @@
+// Package ui provides the Bubbletea TUI for vgmtui.
+package ui
+
+import "github.com/charmbracelet/lipgloss"
+
+// Colors used throughout the UI.
+var (
+	// Primary colors
+	ColorPrimary   = lipgloss.Color("#7571F9")
+	ColorSecondary = lipgloss.Color("#EE6FF8")
+	ColorMuted     = lipgloss.Color("#606060")
+	ColorSubtle    = lipgloss.Color("#383838")
+
+	// State colors
+	ColorPlaying = lipgloss.Color("#04B575")
+	ColorPaused  = lipgloss.Color("#FFA500")
+	ColorStopped = lipgloss.Color("#FF5555")
+
+	// Text colors
+	ColorText      = lipgloss.Color("#FAFAFA")
+	ColorTextMuted = lipgloss.Color("#A0A0A0")
+)
+
+// Styles contains all the styles used in the UI.
+type Styles struct {
+	// Panel styles
+	FocusedBorder lipgloss.Style
+	NormalBorder  lipgloss.Style
+
+	// Title styles
+	Title      lipgloss.Style
+	TitleMuted lipgloss.Style
+
+	// Text styles
+	Text         lipgloss.Style
+	TextMuted    lipgloss.Style
+	TextBold     lipgloss.Style
+	TextHighlight lipgloss.Style
+
+	// Status styles
+	StatusPlaying lipgloss.Style
+	StatusPaused  lipgloss.Style
+	StatusStopped lipgloss.Style
+
+	// Progress bar styles
+	ProgressFilled lipgloss.Style
+	ProgressEmpty  lipgloss.Style
+	ProgressTime   lipgloss.Style
+
+	// Footer/help styles
+	FooterKey  lipgloss.Style
+	FooterDesc lipgloss.Style
+	FooterSep  lipgloss.Style
+}
+
+// DefaultStyles returns the default styles for the UI.
+func DefaultStyles() Styles {
+	return Styles{
+		// Panel borders
+		FocusedBorder: lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(ColorPrimary),
+
+		NormalBorder: lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(ColorMuted),
+
+		// Titles
+		Title: lipgloss.NewStyle().
+			Foreground(ColorPrimary).
+			Bold(true),
+
+		TitleMuted: lipgloss.NewStyle().
+			Foreground(ColorTextMuted),
+
+		// Text
+		Text: lipgloss.NewStyle().
+			Foreground(ColorText),
+
+		TextMuted: lipgloss.NewStyle().
+			Foreground(ColorTextMuted),
+
+		TextBold: lipgloss.NewStyle().
+			Foreground(ColorText).
+			Bold(true),
+
+		TextHighlight: lipgloss.NewStyle().
+			Foreground(ColorPrimary).
+			Bold(true),
+
+		// Status indicators
+		StatusPlaying: lipgloss.NewStyle().
+			Foreground(ColorPlaying).
+			Bold(true),
+
+		StatusPaused: lipgloss.NewStyle().
+			Foreground(ColorPaused).
+			Bold(true),
+
+		StatusStopped: lipgloss.NewStyle().
+			Foreground(ColorStopped).
+			Bold(true),
+
+		// Progress bar
+		ProgressFilled: lipgloss.NewStyle().
+			Foreground(ColorPrimary),
+
+		ProgressEmpty: lipgloss.NewStyle().
+			Foreground(ColorMuted),
+
+		ProgressTime: lipgloss.NewStyle().
+			Foreground(ColorTextMuted),
+
+		// Footer
+		FooterKey: lipgloss.NewStyle().
+			Foreground(ColorPrimary).
+			Bold(true),
+
+		FooterDesc: lipgloss.NewStyle().
+			Foreground(ColorTextMuted),
+
+		FooterSep: lipgloss.NewStyle().
+			Foreground(ColorSubtle),
+	}
+}
+
+// PanelStyle returns a bordered panel style with the given dimensions.
+func (s Styles) PanelStyle(focused bool, width, height int) lipgloss.Style {
+	base := s.NormalBorder
+	if focused {
+		base = s.FocusedBorder
+	}
+	return base.Width(width).Height(height)
+}
+
+// RenderPanel renders content in a panel with a title.
+func (s Styles) RenderPanel(title, content string, focused bool, width, height int) string {
+	titleStyle := s.TitleMuted
+	if focused {
+		titleStyle = s.Title
+	}
+
+	// Render title
+	renderedTitle := titleStyle.Render(title)
+
+	// Build panel content with title at top
+	panelContent := lipgloss.JoinVertical(lipgloss.Left, renderedTitle, content)
+
+	// Apply border
+	return s.PanelStyle(focused, width, height).Render(panelContent)
+}

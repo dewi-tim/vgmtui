@@ -1,0 +1,30 @@
+# Binaries
+vgmtui
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build artifacts
+libvgm/build/
+*.o
+*.a
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
