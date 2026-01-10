@@ -6,24 +6,14 @@ Instructions for Claude Code when working on vgmtui.
 
 vgmtui is a terminal-based VGM (Video Game Music) player built with:
 - **Go** with Bubbletea TUI framework
-- **libvgm** for audio playback (via CGO)
-- **oto** for audio output
-
-## Reference Repositories
-
-These repositories in `../reference-repos/` inform the design:
-
-| Path | Purpose |
-|------|---------|
-| `music/termusic/` | UI patterns, especially `tui/` subdirectory |
-| `vgm/libvgm/` | Core playback library (C/C++) |
-| `vgm/vgmplay-libvgm/` | CLI features, VGM-specific functionality |
-| `tui/bubbletea/` | TUI framework patterns |
-| `tui/bubbles/` | UI components (list, table, progress, etc.) |
+- **libvgm** for audio playback (via CGO, included as git submodule)
 
 ## Build Commands
 
 ```bash
+# Initialize submodule (first time only)
+git submodule update --init --recursive
+
 # Build libvgm wrapper and Go binary
 make
 
@@ -51,16 +41,18 @@ internal/
     view.go            # Rendering
     keymap.go          # Key bindings
     styles.go          # Lipgloss styles
-    components/        # UI components
+    components/        # UI components (browser, playlist, help, progress)
   player/              # Audio engine
-    player.go          # Player interface
-    libvgm.go          # CGO bindings
-    track.go           # Track metadata
-  config/              # Configuration
+    player.go          # AudioPlayer high-level interface
+    libvgm.go          # CGO bindings to libvgm
+    track.go           # Track metadata types
+  library/             # Music library indexing
+    library.go         # Library scanner and index
 libvgm/
+  libvgm/              # Git submodule - ValleyBell/libvgm
   wrapper.h            # C API header
   wrapper.cpp          # C++ to C wrapper
-  CMakeLists.txt       # libvgm build
+  build/               # Build artifacts
 ```
 
 ## CGO Notes
@@ -68,21 +60,22 @@ libvgm/
 - The C wrapper (`libvgm/wrapper.cpp`) wraps libvgm's C++ PlayerA class
 - CGO flags are in `internal/player/libvgm.go`
 - libvgm is built as static libraries in `libvgm/build/`
-- Link order matters: `-lvgm_wrapper -lvgm-player -lvgm-emu -lvgm-utils -lz -lstdc++`
+- Link order matters: `-lvgm_wrapper -lvgm-audio -lvgm-player -lvgm-emu -lvgm-utils -lz -lstdc++`
 
 ## Key Patterns
 
 ### Bubbletea Model
-Follow the Elm architecture: Model, Update, View. See `reference-repos/tui/bubbletea/tea.go`.
+Follow the Elm architecture: Model, Update, View. All state changes flow through typed messages.
 
 ### Message Passing
-Use typed messages for all state changes. Audio events come via channels from the player goroutine.
+Audio events come from the player via channels. UI messages are typed structs.
 
 ### Focus Management
-Track focused panel with enum, use Tab to cycle, route navigation keys to focused component only.
+Track focused panel with enum (FocusBrowser, FocusPlaylist). Tab cycles focus.
 
-### Audio Thread
-Player runs in separate goroutine, communicates via channels for thread safety.
+### Library Mode vs File Browser
+- If `~/VGM` exists: Library mode with hierarchical System > Game > Track browser
+- Otherwise: File browser fallback starting from home directory
 
 ## File Formats
 

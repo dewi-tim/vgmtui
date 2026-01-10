@@ -6,20 +6,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync/atomic"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
-
-// browserLastID is used to generate unique browser instance IDs.
-var browserLastID int64
-
-// nextBrowserID returns a unique ID for browser instances.
-func nextBrowserID() int {
-	return int(atomic.AddInt64(&browserLastID, 1))
-}
 
 // VGM-compatible file extensions.
 var vgmExtensions = []string{".vgm", ".vgz", ".s98", ".dro", ".gym"}
@@ -35,7 +26,6 @@ type BrowserKeyMap struct {
 	Open         key.Binding
 	Back         key.Binding
 	ToggleHidden key.Binding
-	AddAll       key.Binding
 }
 
 // DefaultBrowserKeyMap returns the default browser key bindings.
@@ -77,10 +67,6 @@ func DefaultBrowserKeyMap() BrowserKeyMap {
 			key.WithKeys("."),
 			key.WithHelp(".", "hidden"),
 		),
-		AddAll: key.NewBinding(
-			key.WithKeys("L"),
-			key.WithHelp("L", "add all"),
-		),
 	}
 }
 
@@ -94,9 +80,6 @@ type FileEntry struct {
 
 // Browser is a file browser component for navigating and selecting VGM files.
 type Browser struct {
-	// Instance ID for message filtering
-	id int
-
 	// Current directory
 	currentDir string
 
@@ -107,9 +90,6 @@ type Browser struct {
 	selected int
 	min      int // First visible index
 	max      int // Last visible index
-
-	// Pending selection name (used when navigating to parent to restore selection)
-	pendingSelectName string
 
 	// Dimensions
 	width  int
@@ -170,11 +150,6 @@ type FileSelectedMsg struct {
 	Path string
 }
 
-// FilesSelectedMsg is sent when multiple files are added (e.g., add all from directory).
-type FilesSelectedMsg struct {
-	Paths []string
-}
-
 // DirChangedMsg is sent when the directory changes.
 type DirChangedMsg struct {
 	Path string
@@ -182,7 +157,6 @@ type DirChangedMsg struct {
 
 // BrowserReadDirMsg is sent when directory contents are read.
 type BrowserReadDirMsg struct {
-	ID      int // Browser instance ID for filtering
 	Dir     string
 	Entries []FileEntry
 	Err     error
@@ -204,7 +178,6 @@ func NewBrowser(startDir string) Browser {
 	}
 
 	b := Browser{
-		id:         nextBrowserID(),
 		currentDir: startDir,
 		entries:    []FileEntry{},
 		selected:   0,
@@ -228,12 +201,9 @@ func (b Browser) Init() tea.Cmd {
 
 // readDir returns a command to read a directory's contents.
 func (b Browser) readDir(path string) tea.Cmd {
-	id := b.id
-	showHidden := b.showHidden
 	return func() tea.Msg {
-		entries, err := readDirFiltered(path, showHidden)
+		entries, err := readDirFiltered(path, b.showHidden)
 		return BrowserReadDirMsg{
-			ID:      id,
 			Dir:     path,
 			Entries: entries,
 			Err:     err,
@@ -304,10 +274,6 @@ func isVGMFile(name string) bool {
 func (b Browser) Update(msg tea.Msg) (Browser, tea.Cmd) {
 	switch msg := msg.(type) {
 	case BrowserReadDirMsg:
-		// Filter by instance ID to avoid handling other browser's messages
-		if msg.ID != b.id {
-			return b, nil
-		}
 		if msg.Err != nil {
 			b.err = msg.Err
 			return b, nil
@@ -321,11 +287,6 @@ func (b Browser) Update(msg tea.Msg) (Browser, tea.Cmd) {
 			if b.selected < 0 {
 				b.selected = 0
 			}
-		}
-		// Apply pending selection if set (used when navigating to parent)
-		if b.pendingSelectName != "" {
-			b.HandleSelectName(b.pendingSelectName)
-			b.pendingSelectName = ""
 		}
 		b.updateViewport()
 		return b, nil
@@ -376,30 +337,9 @@ func (b Browser) handleKeyMsg(msg tea.KeyMsg) (Browser, tea.Cmd) {
 	case key.Matches(msg, b.KeyMap.ToggleHidden):
 		b.showHidden = !b.showHidden
 		return b, b.readDir(b.currentDir)
-
-	case key.Matches(msg, b.KeyMap.AddAll):
-		return b.addAllFiles()
 	}
 
 	return b, nil
-}
-
-// addAllFiles adds all VGM files from the current directory.
-func (b Browser) addAllFiles() (Browser, tea.Cmd) {
-	var paths []string
-	for _, entry := range b.entries {
-		if !entry.IsDir && isVGMFile(entry.Name) {
-			paths = append(paths, entry.Path)
-		}
-	}
-
-	if len(paths) == 0 {
-		return b, nil
-	}
-
-	return b, func() tea.Msg {
-		return FilesSelectedMsg{Paths: paths}
-	}
 }
 
 // moveUp moves selection up one item.
@@ -514,8 +454,8 @@ func (b Browser) goToParent() (Browser, tea.Cmd) {
 		return b, nil
 	}
 
-	// Store current dir name to restore selection after directory loads
-	b.pendingSelectName = filepath.Base(b.currentDir)
+	// Try to find current dir name to restore selection
+	currentName := filepath.Base(b.currentDir)
 	b.selected = 0
 	b.min = 0
 	b.max = b.visibleCount() - 1
@@ -523,7 +463,14 @@ func (b Browser) goToParent() (Browser, tea.Cmd) {
 	return b, tea.Batch(
 		b.readDir(parent),
 		func() tea.Msg { return DirChangedMsg{Path: parent} },
+		// After reading, try to select the directory we came from
+		func() tea.Msg { return browserSelectNameMsg{name: currentName} },
 	)
+}
+
+// browserSelectNameMsg is used internally to select a specific entry by name.
+type browserSelectNameMsg struct {
+	name string
 }
 
 // HandleSelectName handles selecting an entry by name (used after navigating up).

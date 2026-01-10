@@ -8,7 +8,6 @@ vgmtui is a TUI wrapper around [libvgm](https://github.com/ValleyBell/libvgm) fo
 
 - **Go** with [Bubbletea](https://github.com/charmbracelet/bubbletea) for the TUI
 - **libvgm** for audio playback (via CGO)
-- Inspired by **vgmplay** for VGM-specific functionality
 
 ## Supported Formats
 
@@ -25,16 +24,24 @@ vgmtui is a TUI wrapper around [libvgm](https://github.com/ValleyBell/libvgm) fo
 - CMake 3.10+
 - C/C++ compiler (gcc/clang)
 - zlib development headers
-- Audio libraries: ALSA, PulseAudio, or libao
+- Audio libraries: ALSA and PulseAudio
 
 On Debian/Ubuntu:
 ```bash
 sudo apt install build-essential cmake zlib1g-dev libasound2-dev libpulse-dev libao-dev
 ```
 
-### Build
+### Clone and Build
 
 ```bash
+# Clone with submodules
+git clone --recurse-submodules https://github.com/user/vgmtui.git
+cd vgmtui
+
+# Or if already cloned, initialize submodules
+git submodule update --init --recursive
+
+# Build
 make
 ```
 
@@ -54,7 +61,7 @@ Installs to `/usr/local/bin/vgmtui`.
 vgmtui [path]
 ```
 
-If no path is given, starts in `~/VGM` or home directory.
+If no path is given and `~/VGM` exists, it starts in library mode with a hierarchical view (System > Game > Track). Otherwise, it falls back to file browser mode starting from the home directory.
 
 ### Key Bindings
 
@@ -66,8 +73,23 @@ If no path is given, starts in `~/VGM` or home directory.
 | `d` / `D` | Remove track / Clear playlist |
 | `Tab` | Switch focus between panels |
 | `j/k` | Navigate up/down |
+| `a` | Add all tracks from current game/system |
+| `L` | Add all files from current directory |
 | `?` | Help |
 | `q` | Quit |
+
+### Library Mode
+
+When `~/VGM` exists, vgmtui operates in library mode with a hierarchical browser:
+- **System** (e.g., Genesis, SNES, PC Engine)
+- **Game** (organized by GD3 metadata)
+- **Track** (individual VGM files)
+
+The library is indexed on startup by scanning GD3 tags from VGM files.
+
+### File Browser Mode
+
+When `~/VGM` doesn't exist, vgmtui falls back to a traditional file browser starting from the home directory. Navigate to find your VGM files.
 
 ## License
 

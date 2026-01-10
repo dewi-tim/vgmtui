@@ -398,6 +398,12 @@ func (m Model) renderFooter() string {
 	helpStyle := lipgloss.NewStyle().Foreground(ColorTextMuted)
 	keyStyle := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
 
+	// Determine what to call the left panel based on mode
+	leftPanelName := "browser"
+	if m.useLibrary {
+		leftPanelName = "library"
+	}
+
 	switch m.focus {
 	case FocusBrowser:
 		content.WriteString(keyStyle.Render("Enter"))
@@ -412,7 +418,7 @@ func (m Model) renderFooter() string {
 		content.WriteString(keyStyle.Render("d"))
 		content.WriteString(helpStyle.Render(":remove "))
 		content.WriteString(keyStyle.Render("Tab"))
-		content.WriteString(helpStyle.Render(":browser "))
+		content.WriteString(helpStyle.Render(":" + leftPanelName + " "))
 	}
 
 	// Common hints

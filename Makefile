@@ -1,7 +1,7 @@
 .PHONY: all libvgm build clean test install
 
 GO := /usr/local/go/bin/go
-LIBVGM_SRC := $(abspath ../reference-repos/vgm/libvgm)
+LIBVGM_SRC := $(abspath libvgm/libvgm)
 BUILD_DIR := libvgm/build
 
 # Audio driver configuration

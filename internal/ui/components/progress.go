@@ -6,27 +6,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ProgressBar displays a progress bar with time display.
+// ProgressBar wraps the bubbles progress component with time display.
 type ProgressBar struct {
+	progress progress.Model
 	elapsed  time.Duration
 	duration time.Duration
 	width    int
 
 	// Styles
-	TimeStyle   lipgloss.Style
-	FilledStyle lipgloss.Style
-	EmptyStyle  lipgloss.Style
-	FilledChar  rune
-	EmptyChar   rune
+	TimeStyle     lipgloss.Style
+	FilledStyle   lipgloss.Style
+	EmptyStyle    lipgloss.Style
+	FilledChar    rune
+	EmptyChar     rune
 }
 
 // NewProgressBar creates a new progress bar with default styling.
 func NewProgressBar() ProgressBar {
+	p := progress.New(
+		progress.WithoutPercentage(),
+		progress.WithDefaultGradient(),
+	)
+
 	return ProgressBar{
+		progress:    p,
 		width:       40,
 		FilledChar:  '\u2588', // Full block
 		EmptyChar:   '\u2591', // Light shade
@@ -39,6 +47,12 @@ func NewProgressBar() ProgressBar {
 // SetWidth sets the total width available for the progress bar.
 func (p *ProgressBar) SetWidth(width int) {
 	p.width = width
+	// Subtract space for time display: "00:00 " + " 00:00" = 13 chars
+	barWidth := width - 13
+	if barWidth < 10 {
+		barWidth = 10
+	}
+	p.progress.Width = barWidth
 }
 
 // SetElapsed sets the current elapsed time.
@@ -51,11 +65,13 @@ func (p *ProgressBar) SetDuration(d time.Duration) {
 	p.duration = d
 }
 
-// Update handles messages for the progress bar.
-// Currently a no-op since the progress bar state is set externally.
+// Update updates the progress bar state.
 func (p ProgressBar) Update(msg tea.Msg) (ProgressBar, tea.Cmd) {
-	_ = msg // unused
-	return p, nil
+	var cmd tea.Cmd
+	var m tea.Model
+	m, cmd = p.progress.Update(msg)
+	p.progress = m.(progress.Model)
+	return p, cmd
 }
 
 // View renders the progress bar with time display.

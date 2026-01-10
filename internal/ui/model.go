@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/dewi-tim/vgmtui/internal/library"
@@ -58,6 +59,7 @@ type Model struct {
 	useLibrary bool                    // Whether to use library browser
 	playlist   components.Playlist
 	progress   components.ProgressBar
+	help       help.Model
 	helpPopup  components.HelpPopup
 
 	// Key bindings
@@ -81,9 +83,6 @@ type Model struct {
 
 	// Track chip info (from real player)
 	trackChips []player.ChipInfo
-
-	// Volume (0.0 - 1.0)
-	volume float64
 
 	// Styles
 	styles Styles
@@ -138,11 +137,11 @@ func NewWithPlayer(ap *player.AudioPlayer) Model {
 		useLibrary:  useLibrary,
 		playlist:    playlist,
 		progress:    components.NewProgressBar(),
+		help:        help.New(),
 		helpPopup:   components.NewHelpPopup(),
 		keyMap:      DefaultKeyMap(),
 		styles:      DefaultStyles(),
 		audioPlayer: ap,
-		volume:      1.0,
 		playback: PlaybackInfo{
 			State:      StateStopped,
 			TotalLoops: 2,

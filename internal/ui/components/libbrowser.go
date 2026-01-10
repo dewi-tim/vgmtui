@@ -4,7 +4,6 @@ package components
 import (
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,14 +11,6 @@ import (
 
 	"github.com/dewi-tim/vgmtui/internal/library"
 )
-
-// libBrowserLastID is used to generate unique library browser instance IDs.
-var libBrowserLastID int64
-
-// nextLibBrowserID returns a unique ID for library browser instances.
-func nextLibBrowserID() int {
-	return int(atomic.AddInt64(&libBrowserLastID, 1))
-}
 
 // LibBrowserKeyMap defines key bindings for the library browser.
 type LibBrowserKeyMap struct {
@@ -100,9 +91,6 @@ type TreeNode struct {
 
 // LibBrowser is a tree-based library browser component.
 type LibBrowser struct {
-	// Instance ID for message filtering
-	id int
-
 	// Library data
 	lib  *library.Library
 	root []*TreeNode // Root nodes (systems)
@@ -170,7 +158,6 @@ func DefaultLibBrowserStyles() LibBrowserStyles {
 
 // LibBrowserScanCompleteMsg is sent when library scanning completes.
 type LibBrowserScanCompleteMsg struct {
-	ID         int // Instance ID for filtering
 	TrackCount int
 	Err        error
 }
@@ -188,7 +175,6 @@ type LibTracksSelectedMsg struct {
 // NewLibBrowser creates a new library browser.
 func NewLibBrowser(lib *library.Library) *LibBrowser {
 	b := &LibBrowser{
-		id:       nextLibBrowserID(),
 		lib:      lib,
 		root:     make([]*TreeNode, 0),
 		flatList: make([]*TreeNode, 0),
@@ -211,17 +197,12 @@ func (b *LibBrowser) Init() tea.Cmd {
 }
 
 // Scan returns a command that scans the library.
-// Uses tea.Sequence to first send a scan start message, then perform the scan.
 func (b *LibBrowser) Scan() tea.Cmd {
-	id := b.id
-	lib := b.lib
-	return tea.Sequence(
-		func() tea.Msg { return LibBrowserScanStartMsg{ID: id} },
-		func() tea.Msg {
-			count, err := lib.Scan()
-			return LibBrowserScanCompleteMsg{ID: id, TrackCount: count, Err: err}
-		},
-	)
+	b.scanning = true
+	return func() tea.Msg {
+		count, err := b.lib.Scan()
+		return LibBrowserScanCompleteMsg{TrackCount: count, Err: err}
+	}
 }
 
 // buildTree builds the tree structure from the library.
@@ -299,27 +280,10 @@ func (b *LibBrowser) addToFlatList(node *TreeNode, depth int) {
 	}
 }
 
-// LibBrowserScanStartMsg is sent when a library scan begins.
-type LibBrowserScanStartMsg struct {
-	ID int
-}
-
 // Update handles messages and updates the browser state.
 func (b *LibBrowser) Update(msg tea.Msg) (*LibBrowser, tea.Cmd) {
 	switch msg := msg.(type) {
-	case LibBrowserScanStartMsg:
-		// Filter by instance ID
-		if msg.ID != b.id {
-			return b, nil
-		}
-		b.scanning = true
-		return b, nil
-
 	case LibBrowserScanCompleteMsg:
-		// Filter by instance ID
-		if msg.ID != b.id {
-			return b, nil
-		}
 		b.scanning = false
 		if msg.Err == nil {
 			b.trackCount = msg.TrackCount
