@@ -58,23 +58,10 @@ func (m Model) renderTooSmall() string {
 func (m Model) renderLibrary(width, height int) string {
 	focused := m.focus == FocusBrowser
 
-	// Build placeholder content
-	content := strings.Builder{}
-	content.WriteString(m.styles.TextMuted.Render("(file browser placeholder)"))
-	content.WriteString("\n\n")
-	content.WriteString(m.styles.Text.Render("  .. (parent)"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.Text.Render("  [Genesis]"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.Text.Render("  [SNES]"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.TextHighlight.Render("> [PC-Engine]"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.Text.Render("    song.vgm"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.Text.Render("    track.vgz"))
+	// Render the browser component
+	content := m.browser.View()
 
-	return m.styles.RenderPanel("Library", content.String(), focused, width-2, height-2)
+	return m.styles.RenderPanel("Library", content, focused, width-2, height-2)
 }
 
 // renderRightPane renders the right side containing playlist, track info, and progress.
@@ -95,22 +82,12 @@ func (m Model) renderRightPane(width, height int) string {
 func (m Model) renderPlaylist(width, height int) string {
 	focused := m.focus == FocusPlaylist
 
-	// Build placeholder content with mock playlist
-	content := strings.Builder{}
-	content.WriteString(m.styles.TextMuted.Render("(playlist placeholder)"))
-	content.WriteString("\n\n")
-	content.WriteString(m.styles.TextMuted.Render(" Duration | Title         | Game"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.TextMuted.Render(" ---------+---------------+--------"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.Text.Render("   02:34  | Green Hill    | Sonic 1"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.TextHighlight.Render(" > 03:01  | Marble Zone   | Sonic 1"))
-	content.WriteString("\n")
-	content.WriteString(m.styles.Text.Render("   01:45  | Star Light    | Sonic 1"))
+	// Use the playlist component's view
+	content := m.playlist.View()
 
-	title := fmt.Sprintf("Playlist [2/3]")
-	return m.styles.RenderPanel(title, content.String(), focused, width-2, height-2)
+	// Use the playlist's title which includes track count info
+	title := m.playlist.Title()
+	return m.styles.RenderPanel(title, content, focused, width-2, height-2)
 }
 
 // renderTrackInfo renders the track information panel.

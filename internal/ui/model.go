@@ -26,15 +26,9 @@ const (
 	StatePaused
 )
 
-// Track represents a track in the playlist (mock for now).
-type Track struct {
-	Path     string
-	Title    string
-	Game     string
-	System   string
-	Composer string
-	Duration time.Duration
-}
+// Track is an alias for the components.Track type.
+// This allows other packages to use ui.Track without importing components.
+type Track = components.Track
 
 // PlaybackInfo holds current playback state.
 type PlaybackInfo struct {
@@ -55,6 +49,8 @@ type Model struct {
 	focus Focus
 
 	// UI Components
+	browser  components.Browser
+	playlist components.Playlist
 	progress components.ProgressBar
 	help     help.Model
 
@@ -75,8 +71,44 @@ type Model struct {
 
 // New creates a new Model with default values.
 func New() Model {
+	// Initialize browser with home directory
+	browser := components.NewBrowser("")
+	browser.Focus() // Start with browser focused
+
+	// Initialize playlist with some mock tracks
+	playlist := components.NewPlaylist()
+	playlist.AddTracks([]Track{
+		{
+			Path:     "/music/sonic1/green_hill.vgm",
+			Title:    "Green Hill Zone",
+			Game:     "Sonic 1",
+			System:   "Genesis",
+			Composer: "Masato Nakamura",
+			Duration: 2*time.Minute + 34*time.Second,
+		},
+		{
+			Path:     "/music/sonic1/marble.vgm",
+			Title:    "Marble Zone",
+			Game:     "Sonic 1",
+			System:   "Genesis",
+			Composer: "Masato Nakamura",
+			Duration: 3*time.Minute + 1*time.Second,
+		},
+		{
+			Path:     "/music/sonic1/starlight.vgm",
+			Title:    "Star Light Zone",
+			Game:     "Sonic 1",
+			System:   "Genesis",
+			Composer: "Masato Nakamura",
+			Duration: 1*time.Minute + 45*time.Second,
+		},
+	})
+	playlist.SetCurrentTrack(1) // Set Marble Zone as currently playing
+
 	return Model{
 		focus:    FocusBrowser,
+		browser:  browser,
+		playlist: playlist,
 		progress: components.NewProgressBar(),
 		help:     help.New(),
 		keyMap:   DefaultKeyMap(),
@@ -99,7 +131,11 @@ func New() Model {
 // Init returns the initial command to run.
 func (m Model) Init() tea.Cmd {
 	// Start a tick for updating the progress bar during playback
-	return tickCmd()
+	// Also initialize the browser
+	return tea.Batch(
+		tickCmd(),
+		m.browser.Init(),
+	)
 }
 
 // tickCmd returns a command that ticks every 100ms for smooth progress updates.
