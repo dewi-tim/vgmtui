@@ -28,20 +28,33 @@ func (m Model) View() string {
 		return m.renderTooSmall()
 	}
 
-	// Calculate layout dimensions
+	// Layout: footer takes 1 line at absolute bottom, main content fills the rest
+	footerHeight := 1
+	mainHeight := m.height - footerHeight
+
+	// Calculate panel widths
 	libraryWidth := m.width * libraryWidthPercent / 100
-	rightWidth := m.width - libraryWidth - 3 // 3 for spacing/borders
+	rightWidth := m.width - libraryWidth
 
-	// Build the main layout
-	mainContent := lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		m.renderLibrary(libraryWidth, m.height-4),
-		" ",
-		m.renderRightPane(rightWidth, m.height-4),
-	)
+	// Build the main layout - both panels take full mainHeight
+	leftPanel := m.renderLibrary(libraryWidth, mainHeight)
+	rightPanel := m.renderRightPane(rightWidth, mainHeight)
 
-	// Add footer
+	mainContent := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+
+	// Ensure main content takes exactly mainHeight lines
+	mainContent = lipgloss.NewStyle().
+		Width(m.width).
+		Height(mainHeight).
+		MaxHeight(mainHeight).
+		Render(mainContent)
+
+	// Footer pinned to bottom
 	footer := m.renderFooter()
+	footer = lipgloss.NewStyle().
+		Width(m.width).
+		Height(footerHeight).
+		Render(footer)
 
 	mainView := lipgloss.JoinVertical(lipgloss.Left, mainContent, footer)
 
@@ -177,15 +190,48 @@ func (m Model) renderLibrary(width, height int) string {
 	// Render the browser component
 	content := m.browser.View()
 
-	return m.styles.RenderPanel("Library", content, focused, width-2, height-2)
+	// Calculate content height (panel height minus borders and title)
+	// Border takes 2 lines (top + bottom), title takes 1 line
+	contentHeight := height - 3
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	// Constrain content to fit within the panel
+	content = constrainContentHeight(content, contentHeight)
+
+	// Pass full outer dimensions - RenderPanel handles inner calculation
+	return m.styles.RenderPanel("Library", content, focused, width, height)
+}
+
+// constrainContentHeight truncates content to fit within the specified height.
+func constrainContentHeight(content string, maxHeight int) string {
+	if maxHeight <= 0 {
+		return content
+	}
+
+	// Remove trailing newline to avoid off-by-one in line counting
+	content = strings.TrimSuffix(content, "\n")
+
+	lines := strings.Split(content, "\n")
+	if len(lines) > maxHeight {
+		lines = lines[:maxHeight]
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // renderRightPane renders the right side containing playlist, track info, and progress.
 func (m Model) renderRightPane(width, height int) string {
-	// Calculate heights for sub-panels
-	playlistHeight := height * 50 / 100
-	trackInfoHeight := height * 25 / 100
-	progressHeight := height - playlistHeight - trackInfoHeight - 2
+	// Fixed heights for bottom panels (like termusic's Constraint::Length)
+	progressHeight := 5  // Status line + progress bar + border(2) + title(1)
+	trackInfoHeight := 6 // Track info with border
+
+	// Playlist takes remaining space (like termusic's Constraint::Min)
+	playlistHeight := height - progressHeight - trackInfoHeight
+	if playlistHeight < 3 {
+		playlistHeight = 3
+	}
 
 	playlist := m.renderPlaylist(width, playlistHeight)
 	trackInfo := m.renderTrackInfo(width, trackInfoHeight)
@@ -203,7 +249,8 @@ func (m Model) renderPlaylist(width, height int) string {
 
 	// Use the playlist's title which includes track count info
 	title := m.playlist.Title()
-	return m.styles.RenderPanel(title, content, focused, width-2, height-2)
+	// Pass full outer dimensions - RenderPanel handles inner calculation
+	return m.styles.RenderPanel(title, content, focused, width, height)
 }
 
 // renderTrackInfo renders the track information panel.
@@ -257,13 +304,8 @@ func (m Model) renderTrackInfo(width, height int) string {
 		content.WriteString(m.styles.TextMuted.Render("Select a VGM file from the library"))
 	}
 
-	// No border for track info, just content
-	style := lipgloss.NewStyle().
-		Width(width - 4).
-		Height(height - 1).
-		Padding(0, 1)
-
-	return style.Render(content.String())
+	// Pass full outer dimensions - RenderPanel handles inner calculation
+	return m.styles.RenderPanel("Track Info", content.String(), false, width, height)
 }
 
 // formatChipList formats the chip info into a readable string.
@@ -314,20 +356,15 @@ func (m Model) renderProgress(width, height int) string {
 		statusStyle.Render(statusText),
 		m.styles.TextMuted.Render(loopInfo)))
 
-	// Second line: progress bar
+	// Second line: progress bar (adjust width for border and padding)
 	m.progress.SetWidth(width - 6)
 	m.progress.SetElapsed(m.playback.Position)
 	m.progress.SetDuration(m.playback.Duration)
 	content.WriteString(m.progress.View())
 
-	// Style the container
-	style := lipgloss.NewStyle().
-		Width(width - 4).
-		Padding(0, 1).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(ColorMuted)
-
-	return style.Render(content.String())
+	// Use RenderPanel to get complete borders like other panels
+	// Pass full outer dimensions - RenderPanel handles inner calculation
+	return m.styles.RenderPanel("Progress", content.String(), false, width, height)
 }
 
 // renderFooter renders the help/key hints footer.

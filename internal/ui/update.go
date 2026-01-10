@@ -91,19 +91,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.Width = msg.Width
-		m.progress.SetWidth(msg.Width - 20) // Leave room for borders
 
-		// Update browser size
+		// Match the layout calculations from View()
+		footerHeight := 1
+		mainHeight := m.height - footerHeight
+
+		// Panel widths
 		libraryWidth := m.width * libraryWidthPercent / 100
-		browserHeight := m.height - 4 // Account for borders and footer
-		m.browser.SetSize(libraryWidth-4, browserHeight-4) // Account for panel borders/padding
+		rightWidth := m.width - libraryWidth
 
-		// Update playlist size
-		rightWidth := m.width - libraryWidth - 3
-		playlistHeight := (m.height - 4) * 50 / 100
-		m.playlist.SetSize(rightWidth-4, playlistHeight-2)
+		// Browser size: outer=libraryWidth x mainHeight, inner subtracts border(2) and title(1)
+		browserInnerWidth := libraryWidth - 2
+		browserInnerHeight := mainHeight - 3 // border(2) + title(1)
+		m.browser.SetSize(browserInnerWidth, browserInnerHeight)
 
-		// Update help popup size
+		// Right pane layout (from renderRightPane)
+		progressHeight := 5
+		trackInfoHeight := 6
+		playlistHeight := mainHeight - progressHeight - trackInfoHeight
+
+		// Playlist size: inner dimensions
+		playlistInnerWidth := rightWidth - 2
+		playlistInnerHeight := playlistHeight - 3 // border(2) + title(1)
+		m.playlist.SetSize(playlistInnerWidth, playlistInnerHeight)
+
+		// Progress bar width (inside progress panel)
+		progressInnerWidth := rightWidth - 4 // border + some padding
+		m.progress.SetWidth(progressInnerWidth)
+
+		// Help popup
 		m.helpPopup.SetSize(msg.Width, msg.Height)
 
 		return m, nil
@@ -479,11 +495,16 @@ func (m Model) togglePlayPause() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// loadTrackMetadata returns a command that loads track metadata from the player.
+// loadTrackMetadata returns a command that loads track metadata without
+// affecting the current playback state. It uses a separate player instance
+// to read metadata, so it can be called while music is playing.
 func loadTrackMetadata(ap *player.AudioPlayer, path string) tea.Cmd {
+	// Note: ap is not used directly here anymore, but kept for API consistency
+	_ = ap
 	return func() tea.Msg {
-		// Temporarily load the file to get metadata
-		if err := ap.Load(path); err != nil {
+		// Read metadata using a temporary player instance
+		track, err := player.ReadTrackMetadata(path)
+		if err != nil {
 			// Return error along with basic track info
 			return tea.Batch(
 				func() tea.Msg {
@@ -499,17 +520,6 @@ func loadTrackMetadata(ap *player.AudioPlayer, path string) tea.Cmd {
 					}
 				},
 			)()
-		}
-
-		// Get track metadata
-		track := ap.Track()
-		if track == nil {
-			return TrackMetadataLoadedMsg{
-				Track: Track{
-					Path:  path,
-					Title: filepath.Base(path),
-				},
-			}
 		}
 
 		// Convert player.Track to components.Track

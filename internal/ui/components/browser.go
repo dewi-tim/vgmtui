@@ -538,9 +538,16 @@ func (b *Browser) updateViewport() {
 func (b Browser) View() string {
 	var s strings.Builder
 
+	// Available width for entry names (minus cursor "  " or "> ")
+	cursorWidth := 2
+	nameWidth := b.width - cursorWidth
+	if nameWidth < 5 {
+		nameWidth = 5
+	}
+
 	// Show current directory (truncated if needed)
 	dir := b.currentDir
-	maxDirLen := b.width - 4
+	maxDirLen := b.width - 2
 	if maxDirLen < 10 {
 		maxDirLen = 10
 	}
@@ -553,54 +560,112 @@ func (b Browser) View() string {
 	// Handle errors
 	if b.err != nil {
 		s.WriteString(b.Styles.Muted.Render("Error: " + b.err.Error()))
-		return s.String()
+		return b.constrainToHeight(s.String())
 	}
 
 	// Handle empty directory
 	if len(b.entries) == 0 {
 		s.WriteString(b.Styles.EmptyDir.Render("(empty)"))
-		return s.String()
+		return b.constrainToHeight(s.String())
 	}
 
-	// Render entries
-	visible := b.visibleCount()
+	// Render entries - only render visible items within min/max range
 	for i := b.min; i <= b.max && i < len(b.entries); i++ {
 		entry := b.entries[i]
+		isSelected := i == b.selected
 
 		// Cursor
 		cursor := "  "
-		if i == b.selected {
+		if isSelected {
 			cursor = b.Styles.Cursor.Render("> ")
 		}
 
-		// Entry name with style
-		var name string
+		// Build display name
+		var displayName string
 		if entry.IsDir {
-			displayName := "[" + entry.Name + "]"
-			if i == b.selected {
-				name = b.Styles.SelectedDir.Render(displayName)
+			displayName = "[" + entry.Name + "]"
+		} else {
+			displayName = entry.Name
+		}
+
+		// Truncate or scroll the name to fit
+		displayName = b.fitName(displayName, nameWidth, isSelected)
+
+		// Apply style
+		var styledName string
+		if entry.IsDir {
+			if isSelected {
+				styledName = b.Styles.SelectedDir.Render(displayName)
 			} else {
-				name = b.Styles.Directory.Render(displayName)
+				styledName = b.Styles.Directory.Render(displayName)
 			}
 		} else {
-			if i == b.selected {
-				name = b.Styles.Selected.Render(entry.Name)
+			if isSelected {
+				styledName = b.Styles.Selected.Render(displayName)
 			} else {
-				name = b.Styles.VGMFile.Render(entry.Name)
+				styledName = b.Styles.VGMFile.Render(displayName)
 			}
 		}
 
-		s.WriteString(cursor + name)
+		s.WriteString(cursor + styledName)
 		s.WriteRune('\n')
 	}
 
-	// Pad remaining lines
-	rendered := lipgloss.Height(s.String())
-	for i := rendered; i < visible+1; i++ {
-		s.WriteRune('\n')
+	return b.constrainToHeight(s.String())
+}
+
+// fitName truncates or scrolls a name to fit within the given width.
+// For selected items, it scrolls to show the end of long names.
+// For non-selected items, it truncates with "..." suffix.
+func (b Browser) fitName(name string, maxWidth int, isSelected bool) string {
+	if len(name) <= maxWidth {
+		return name
 	}
 
-	return s.String()
+	if isSelected {
+		// Scroll: show the end portion with "..." prefix
+		visibleLen := maxWidth - 3 // Account for "..."
+		if visibleLen < 1 {
+			visibleLen = 1
+		}
+		return "..." + name[len(name)-visibleLen:]
+	}
+
+	// Truncate: show the beginning with "..." suffix
+	visibleLen := maxWidth - 3 // Account for "..."
+	if visibleLen < 1 {
+		visibleLen = 1
+	}
+	return name[:visibleLen] + "..."
+}
+
+// constrainToHeight ensures the rendered content fits within the browser's height.
+// It truncates lines that exceed the height limit.
+func (b Browser) constrainToHeight(content string) string {
+	if b.height <= 0 {
+		return content
+	}
+
+	// Remove trailing newline to avoid off-by-one in split
+	content = strings.TrimSuffix(content, "\n")
+
+	lines := strings.Split(content, "\n")
+	maxLines := b.height
+	if maxLines <= 0 {
+		maxLines = 1
+	}
+
+	// Truncate to fit within height
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+
+	// Pad with empty lines if needed to maintain consistent height
+	for len(lines) < maxLines {
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // SetSize sets the browser dimensions.

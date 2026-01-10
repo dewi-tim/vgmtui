@@ -2,7 +2,7 @@ package player
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../libvgm
-#cgo LDFLAGS: -L${SRCDIR}/../../libvgm/build -lvgm_wrapper -lvgm-player -lvgm-emu -lvgm-utils -lz -lstdc++ -lm
+#cgo LDFLAGS: -L${SRCDIR}/../../libvgm/build -L${SRCDIR}/../../libvgm/build/bin -lvgm_wrapper -lvgm-audio -lvgm-player -lvgm-emu -lvgm-utils -lz -lstdc++ -lm -lpulse-simple -lpulse -lasound -lao -lpthread
 
 #include "wrapper.h"
 #include <stdlib.h>
@@ -170,40 +170,32 @@ func (p *LibvgmPlayer) Start() error {
 }
 
 // Stop stops playback.
+// NOTE: Caller must hold renderMu from AudioPlayer to ensure thread safety.
 func (p *LibvgmPlayer) Stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle != nil {
 		C.vgm_player_stop(p.handle)
 	}
 }
 
 // Reset resets playback to the beginning.
+// NOTE: Caller must hold renderMu from AudioPlayer to ensure thread safety.
 func (p *LibvgmPlayer) Reset() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle != nil {
 		C.vgm_player_reset(p.handle)
 	}
 }
 
 // FadeOut triggers the fade-out sequence.
+// NOTE: Caller must hold renderMu from AudioPlayer to ensure thread safety.
 func (p *LibvgmPlayer) FadeOut() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle != nil {
 		C.vgm_player_fade_out(p.handle)
 	}
 }
 
 // Seek seeks to a position in the track.
+// NOTE: Caller must hold renderMu from AudioPlayer to ensure thread safety.
 func (p *LibvgmPlayer) Seek(pos time.Duration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle != nil {
 		seconds := pos.Seconds()
 		C.vgm_player_seek(p.handle, C.double(seconds))
@@ -212,10 +204,11 @@ func (p *LibvgmPlayer) Seek(pos time.Duration) {
 
 // Render renders audio samples to a buffer.
 // Returns the number of stereo frames actually rendered.
+// NOTE: This method is intentionally NOT locked - the caller (AudioPlayer.Read)
+// must hold renderMu to ensure thread safety. This avoids nested locking which
+// causes audio stuttering due to lock contention with UI/tick operations.
 func (p *LibvgmPlayer) Render(frames uint32, buffer []int16) uint32 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	// No lock here - caller holds renderMu
 	if p.handle == nil || len(buffer) < int(frames*2) {
 		return 0
 	}
@@ -224,11 +217,19 @@ func (p *LibvgmPlayer) Render(frames uint32, buffer []int16) uint32 {
 	return uint32(rendered)
 }
 
-// IsPlaying returns true if playback is active.
-func (p *LibvgmPlayer) IsPlaying() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// RenderDirect renders audio samples directly to a buffer without any Go-side processing.
+// This is the fastest path - renders directly to the output buffer like vgmplay's FillBuffer.
+// NOTE: Caller must hold renderMu to ensure thread safety.
+func (p *LibvgmPlayer) RenderDirect(frames uint32, buffer []int16) uint32 {
+	if p.handle == nil || len(buffer) < int(frames*2) {
+		return 0
+	}
+	return uint32(C.vgm_player_render(p.handle, C.uint32_t(frames), (*C.int16_t)(unsafe.Pointer(&buffer[0]))))
+}
 
+// IsPlaying returns true if playback is active.
+// This is a lock-free query - libvgm's state is internally consistent.
+func (p *LibvgmPlayer) IsPlaying() bool {
 	if p.handle == nil {
 		return false
 	}
@@ -236,10 +237,8 @@ func (p *LibvgmPlayer) IsPlaying() bool {
 }
 
 // IsFading returns true if fade-out is in progress.
+// This is a lock-free query - libvgm's state is internally consistent.
 func (p *LibvgmPlayer) IsFading() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle == nil {
 		return false
 	}
@@ -247,10 +246,8 @@ func (p *LibvgmPlayer) IsFading() bool {
 }
 
 // IsFinished returns true if playback has finished.
+// This is a lock-free query - libvgm's state is internally consistent.
 func (p *LibvgmPlayer) IsFinished() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle == nil {
 		return false
 	}
@@ -258,10 +255,8 @@ func (p *LibvgmPlayer) IsFinished() bool {
 }
 
 // Position returns the current playback position.
+// This is a lock-free query - libvgm's state is internally consistent.
 func (p *LibvgmPlayer) Position() time.Duration {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle == nil {
 		return 0
 	}
@@ -270,10 +265,8 @@ func (p *LibvgmPlayer) Position() time.Duration {
 }
 
 // Duration returns the total duration including loops.
+// This is a lock-free query - libvgm's state is internally consistent.
 func (p *LibvgmPlayer) Duration() time.Duration {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle == nil {
 		return 0
 	}
@@ -282,10 +275,8 @@ func (p *LibvgmPlayer) Duration() time.Duration {
 }
 
 // CurrentLoop returns the current loop number.
+// This is a lock-free query - libvgm's state is internally consistent.
 func (p *LibvgmPlayer) CurrentLoop() uint32 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle == nil {
 		return 0
 	}
@@ -293,10 +284,8 @@ func (p *LibvgmPlayer) CurrentLoop() uint32 {
 }
 
 // HasLoop returns true if the track has a loop point.
+// This is a lock-free query - libvgm's state is internally consistent.
 func (p *LibvgmPlayer) HasLoop() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.handle == nil {
 		return false
 	}
@@ -492,10 +481,9 @@ func (p *LibvgmPlayer) GetTrack(path string) Track {
 }
 
 // GetPlaybackInfo returns current playback information.
+// This is a lock-free query - libvgm's state is internally consistent.
+// This method is called frequently from the tick loop for UI updates.
 func (p *LibvgmPlayer) GetPlaybackInfo() PlaybackInfo {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	info := PlaybackInfo{
 		State:   StateStopped,
 		Volume:  1.0,
@@ -507,7 +495,7 @@ func (p *LibvgmPlayer) GetPlaybackInfo() PlaybackInfo {
 		return info
 	}
 
-	// Determine state
+	// Determine state - these are all lock-free queries
 	if C.vgm_player_is_finished(p.handle) != 0 {
 		info.State = StateStopped
 	} else if C.vgm_player_is_fading(p.handle) != 0 {
@@ -529,4 +517,338 @@ func (p *LibvgmPlayer) GetPlaybackInfo() PlaybackInfo {
 	info.HasLoop = C.vgm_player_has_loop(p.handle) != 0
 
 	return info
+}
+
+// ReadTrackMetadata reads track metadata from a file without affecting any
+// existing player state. This creates a temporary player instance just for
+// reading metadata, so it can be used while playback is active.
+func ReadTrackMetadata(path string) (Track, error) {
+	track := Track{Path: path}
+
+	// Create a temporary player
+	handle := C.vgm_player_create()
+	if handle == nil {
+		return track, ErrMemory
+	}
+	defer C.vgm_player_destroy(handle)
+
+	// Load the file
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	if err := codeToError(C.vgm_player_load(handle, cpath)); err != nil {
+		return track, err
+	}
+
+	// Read metadata
+	track.Title = C.GoString(C.vgm_player_get_title(handle))
+	track.Game = C.GoString(C.vgm_player_get_game(handle))
+	track.System = C.GoString(C.vgm_player_get_system(handle))
+	track.Composer = C.GoString(C.vgm_player_get_composer(handle))
+	track.Date = C.GoString(C.vgm_player_get_date(handle))
+	track.VGMBy = C.GoString(C.vgm_player_get_vgm_by(handle))
+	track.Notes = C.GoString(C.vgm_player_get_notes(handle))
+	track.Format = C.GoString(C.vgm_player_get_format(handle))
+
+	// Duration
+	seconds := float64(C.vgm_player_get_duration(handle))
+	track.Duration = time.Duration(seconds * float64(time.Second))
+
+	// Loop info
+	track.HasLoop = C.vgm_player_has_loop(handle) != 0
+	if track.HasLoop {
+		loopSeconds := float64(C.vgm_player_get_loop_point(handle))
+		track.LoopPoint = time.Duration(loopSeconds * float64(time.Second))
+	}
+
+	// Note: Chip info is not available until Start() is called,
+	// but for metadata-only queries we don't need it.
+
+	return track, nil
+}
+
+// =============================================================================
+// Audio Driver API
+// =============================================================================
+
+// Audio driver error codes
+var (
+	ErrAudioInit      = errors.New("audio: failed to initialize audio system")
+	ErrAudioNoDrivers = errors.New("audio: no audio drivers available")
+	ErrAudioDrvCreate = errors.New("audio: failed to create audio driver")
+	ErrAudioDrvStart  = errors.New("audio: failed to start audio driver")
+	ErrAudioBind      = errors.New("audio: failed to bind player")
+)
+
+// Driver type constants
+const (
+	AudioDriverTypeOut  = 0x01 // Stream to speakers
+	AudioDriverTypeDisk = 0x02 // Write to disk
+)
+
+// Driver signature constants
+const (
+	AudioDriverSigALSA  = 0x22 // ALSA
+	AudioDriverSigPulse = 0x23 // PulseAudio
+)
+
+// AudioDriverInfo contains information about an available audio driver.
+type AudioDriverInfo struct {
+	ID        uint32
+	Name      string
+	Signature uint8
+	Type      uint8
+}
+
+// AudioDriver wraps libvgm's audio driver for direct audio output.
+type AudioDriver struct {
+	handle *C.VgmAudioDriver
+	mu     sync.Mutex
+}
+
+// audioCodeToError converts audio error codes to Go errors.
+func audioCodeToError(code C.int) error {
+	switch code {
+	case C.VGM_AUDIO_OK:
+		return nil
+	case C.VGM_AUDIO_ERR_INIT:
+		return ErrAudioInit
+	case C.VGM_AUDIO_ERR_NO_DRIVERS:
+		return ErrAudioNoDrivers
+	case C.VGM_AUDIO_ERR_DRV_CREATE:
+		return ErrAudioDrvCreate
+	case C.VGM_AUDIO_ERR_DRV_START:
+		return ErrAudioDrvStart
+	case C.VGM_AUDIO_ERR_BIND:
+		return ErrAudioBind
+	case C.VGM_AUDIO_ERR_NULLPTR:
+		return ErrNullPointer
+	default:
+		return errors.New("audio: unknown error")
+	}
+}
+
+// InitAudioSystem initializes the libvgm audio subsystem.
+// Must be called before using any audio driver functions.
+func InitAudioSystem() error {
+	ret := C.vgm_audio_init()
+	return audioCodeToError(ret)
+}
+
+// DeinitAudioSystem shuts down the audio subsystem.
+func DeinitAudioSystem() {
+	C.vgm_audio_deinit()
+}
+
+// GetAudioDrivers returns a list of available audio drivers.
+func GetAudioDrivers() []AudioDriverInfo {
+	count := uint32(C.vgm_audio_get_driver_count())
+	drivers := make([]AudioDriverInfo, 0, count)
+
+	for i := uint32(0); i < count; i++ {
+		name := C.GoString(C.vgm_audio_get_driver_name(C.uint32_t(i)))
+		sig := uint8(C.vgm_audio_get_driver_sig(C.uint32_t(i)))
+		typ := uint8(C.vgm_audio_get_driver_type(C.uint32_t(i)))
+
+		// Only include output drivers (not disk writers)
+		if typ == AudioDriverTypeOut {
+			drivers = append(drivers, AudioDriverInfo{
+				ID:        i,
+				Name:      name,
+				Signature: sig,
+				Type:      typ,
+			})
+		}
+	}
+	return drivers
+}
+
+// NewAudioDriver creates a new audio driver instance.
+func NewAudioDriver(driverID uint32) (*AudioDriver, error) {
+	handle := C.vgm_audio_driver_create(C.uint32_t(driverID))
+	if handle == nil {
+		return nil, ErrAudioDrvCreate
+	}
+	return &AudioDriver{handle: handle}, nil
+}
+
+// Close destroys the audio driver and frees all resources.
+func (d *AudioDriver) Close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_driver_destroy(d.handle)
+		d.handle = nil
+	}
+}
+
+// SetSampleRate sets the output sample rate in Hz.
+func (d *AudioDriver) SetSampleRate(rate uint32) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_driver_set_sample_rate(d.handle, C.uint32_t(rate))
+	}
+}
+
+// SetChannels sets the number of output channels.
+func (d *AudioDriver) SetChannels(channels uint8) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_driver_set_channels(d.handle, C.uint8_t(channels))
+	}
+}
+
+// SetBits sets the bits per sample.
+func (d *AudioDriver) SetBits(bits uint8) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_driver_set_bits(d.handle, C.uint8_t(bits))
+	}
+}
+
+// SetBufferTime sets the buffer time in microseconds.
+func (d *AudioDriver) SetBufferTime(usec uint32) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_driver_set_buffer_time(d.handle, C.uint32_t(usec))
+	}
+}
+
+// SetBufferCount sets the number of buffers.
+func (d *AudioDriver) SetBufferCount(count uint32) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_driver_set_buffer_count(d.handle, C.uint32_t(count))
+	}
+}
+
+// Start starts the audio driver with the specified device.
+// Use deviceID 0 for the default device.
+func (d *AudioDriver) Start(deviceID uint32) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == nil {
+		return ErrNullPointer
+	}
+
+	ret := C.vgm_audio_driver_start(d.handle, C.uint32_t(deviceID))
+	return audioCodeToError(ret)
+}
+
+// Stop stops the audio driver.
+func (d *AudioDriver) Stop() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == nil {
+		return ErrNullPointer
+	}
+
+	ret := C.vgm_audio_driver_stop(d.handle)
+	return audioCodeToError(ret)
+}
+
+// Pause pauses audio output.
+func (d *AudioDriver) Pause() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == nil {
+		return ErrNullPointer
+	}
+
+	ret := C.vgm_audio_driver_pause(d.handle)
+	return audioCodeToError(ret)
+}
+
+// Resume resumes audio output.
+func (d *AudioDriver) Resume() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == nil {
+		return ErrNullPointer
+	}
+
+	ret := C.vgm_audio_driver_resume(d.handle)
+	return audioCodeToError(ret)
+}
+
+// GetLatency returns the current latency in milliseconds.
+func (d *AudioDriver) GetLatency() uint32 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == nil {
+		return 0
+	}
+
+	return uint32(C.vgm_audio_driver_get_latency(d.handle))
+}
+
+// BindPlayer binds a player to the audio driver.
+// The driver's internal callback will render audio from the player.
+func (d *AudioDriver) BindPlayer(player *LibvgmPlayer) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == nil || player == nil || player.handle == nil {
+		return ErrNullPointer
+	}
+
+	ret := C.vgm_audio_driver_bind_player(d.handle, player.handle)
+	return audioCodeToError(ret)
+}
+
+// UnbindPlayer unbinds the player from the audio driver.
+func (d *AudioDriver) UnbindPlayer() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_driver_unbind_player(d.handle)
+	}
+}
+
+// SafeSeek seeks to a position (thread-safe, acquires render mutex).
+func (d *AudioDriver) SafeSeek(pos time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		seconds := pos.Seconds()
+		C.vgm_audio_safe_seek(d.handle, C.double(seconds))
+	}
+}
+
+// SafeReset resets playback (thread-safe, acquires render mutex).
+func (d *AudioDriver) SafeReset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_safe_reset(d.handle)
+	}
+}
+
+// SafeFadeOut triggers fade-out (thread-safe, acquires render mutex).
+func (d *AudioDriver) SafeFadeOut() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != nil {
+		C.vgm_audio_safe_fade_out(d.handle)
+	}
 }

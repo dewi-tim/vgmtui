@@ -530,3 +530,327 @@ const char* vgm_player_get_chip_core(VgmPlayer* p, uint32_t index) {
     if (!p || index >= p->chipCores.size()) return "";
     return p->chipCores[index].c_str();
 }
+
+/*
+ * =============================================================================
+ * Audio Driver Implementation
+ * =============================================================================
+ */
+
+#include <audio/AudioStream.h>
+#include <utils/OSMutex.h>
+#include <string.h>
+
+// Audio driver state
+struct VgmAudioDriver {
+    void* drvData;              // Audio driver instance from AudioDrv_Init
+    uint32_t driverID;          // Driver ID used to create this instance
+    VgmPlayer* boundPlayer;     // Player bound to this driver
+    OS_MUTEX* renderMtx;        // Mutex for thread-safe rendering
+    volatile uint8_t paused;    // Pause state flag (read atomically in callback)
+
+    // Audio configuration
+    uint32_t sampleRate;
+    uint8_t numChannels;
+    uint8_t numBitsPerSmpl;
+    uint32_t usecPerBuf;
+    uint32_t numBuffers;
+
+    VgmAudioDriver() : drvData(nullptr), driverID(0), boundPlayer(nullptr),
+                       renderMtx(nullptr), paused(0),
+                       sampleRate(44100), numChannels(2), numBitsPerSmpl(16),
+                       usecPerBuf(10000), numBuffers(4) {}
+};
+
+// Global state
+static bool audioSystemInitialized = false;
+
+// FillBuffer callback - called from audio driver's thread
+static UINT32 AudioFillBuffer(void* drvStruct, void* userParam, UINT32 bufSize, void* data) {
+    VgmAudioDriver* drv = (VgmAudioDriver*)userParam;
+
+    // Early out if paused or no player bound
+    if (!drv || drv->paused || !drv->boundPlayer) {
+        memset(data, 0, bufSize);
+        return bufSize;
+    }
+
+    UINT32 renderedBytes = 0;
+
+    // Lock the mutex and render
+    if (OSMutex_Lock(drv->renderMtx) == 0) {
+        if (drv->boundPlayer) {
+            renderedBytes = drv->boundPlayer->player.Render(bufSize, data);
+        }
+        OSMutex_Unlock(drv->renderMtx);
+    }
+
+    // Zero-fill any remaining bytes
+    if (renderedBytes < bufSize) {
+        memset((uint8_t*)data + renderedBytes, 0, bufSize - renderedBytes);
+    }
+
+    return bufSize;
+}
+
+/*
+ * Audio system lifecycle
+ */
+
+int vgm_audio_init(void) {
+    if (audioSystemInitialized) {
+        return VGM_AUDIO_OK;
+    }
+
+    UINT8 ret = Audio_Init();
+    if (ret != AERR_OK && ret != AERR_WASDONE) {
+        return VGM_AUDIO_ERR_INIT;
+    }
+
+    audioSystemInitialized = true;
+    return VGM_AUDIO_OK;
+}
+
+void vgm_audio_deinit(void) {
+    if (audioSystemInitialized) {
+        Audio_Deinit();
+        audioSystemInitialized = false;
+    }
+}
+
+uint32_t vgm_audio_get_driver_count(void) {
+    if (!audioSystemInitialized) return 0;
+    return Audio_GetDriverCount();
+}
+
+const char* vgm_audio_get_driver_name(uint32_t drvID) {
+    if (!audioSystemInitialized) return "";
+
+    AUDDRV_INFO* drvInfo = nullptr;
+    if (Audio_GetDriverInfo(drvID, &drvInfo) != AERR_OK || !drvInfo) {
+        return "";
+    }
+    return drvInfo->drvName ? drvInfo->drvName : "";
+}
+
+uint8_t vgm_audio_get_driver_sig(uint32_t drvID) {
+    if (!audioSystemInitialized) return 0;
+
+    AUDDRV_INFO* drvInfo = nullptr;
+    if (Audio_GetDriverInfo(drvID, &drvInfo) != AERR_OK || !drvInfo) {
+        return 0;
+    }
+    return drvInfo->drvSig;
+}
+
+uint8_t vgm_audio_get_driver_type(uint32_t drvID) {
+    if (!audioSystemInitialized) return 0;
+
+    AUDDRV_INFO* drvInfo = nullptr;
+    if (Audio_GetDriverInfo(drvID, &drvInfo) != AERR_OK || !drvInfo) {
+        return 0;
+    }
+    return drvInfo->drvType;
+}
+
+/*
+ * Audio driver instance
+ */
+
+VgmAudioDriver* vgm_audio_driver_create(uint32_t drvID) {
+    if (!audioSystemInitialized) return nullptr;
+
+    VgmAudioDriver* drv = new(std::nothrow) VgmAudioDriver();
+    if (!drv) return nullptr;
+
+    // Initialize the audio driver
+    UINT8 ret = AudioDrv_Init(drvID, &drv->drvData);
+    if (ret != AERR_OK) {
+        delete drv;
+        return nullptr;
+    }
+
+    drv->driverID = drvID;
+
+    // Create render mutex
+    ret = OSMutex_Init(&drv->renderMtx, 0);
+    if (ret != 0) {
+        AudioDrv_Deinit(&drv->drvData);
+        delete drv;
+        return nullptr;
+    }
+
+    return drv;
+}
+
+void vgm_audio_driver_destroy(VgmAudioDriver* drv) {
+    if (!drv) return;
+
+    // Stop and unbind first
+    vgm_audio_driver_stop(drv);
+    vgm_audio_driver_unbind_player(drv);
+
+    // Destroy mutex
+    if (drv->renderMtx) {
+        OSMutex_Deinit(drv->renderMtx);
+        drv->renderMtx = nullptr;
+    }
+
+    // Deinitialize audio driver
+    if (drv->drvData) {
+        AudioDrv_Deinit(&drv->drvData);
+    }
+
+    delete drv;
+}
+
+/*
+ * Audio driver configuration
+ */
+
+void vgm_audio_driver_set_sample_rate(VgmAudioDriver* drv, uint32_t rate) {
+    if (!drv || rate == 0) return;
+    drv->sampleRate = rate;
+}
+
+void vgm_audio_driver_set_channels(VgmAudioDriver* drv, uint8_t channels) {
+    if (!drv || channels == 0) return;
+    drv->numChannels = channels;
+}
+
+void vgm_audio_driver_set_bits(VgmAudioDriver* drv, uint8_t bits) {
+    if (!drv || (bits != 8 && bits != 16)) return;
+    drv->numBitsPerSmpl = bits;
+}
+
+void vgm_audio_driver_set_buffer_time(VgmAudioDriver* drv, uint32_t usec) {
+    if (!drv || usec == 0) return;
+    drv->usecPerBuf = usec;
+}
+
+void vgm_audio_driver_set_buffer_count(VgmAudioDriver* drv, uint32_t count) {
+    if (!drv || count == 0) return;
+    drv->numBuffers = count;
+}
+
+/*
+ * Audio driver control
+ */
+
+int vgm_audio_driver_start(VgmAudioDriver* drv, uint32_t deviceID) {
+    if (!drv || !drv->drvData) return VGM_AUDIO_ERR_NULLPTR;
+
+    // Get audio options and configure
+    AUDIO_OPTS* opts = AudioDrv_GetOptions(drv->drvData);
+    if (opts) {
+        opts->sampleRate = drv->sampleRate;
+        opts->numChannels = drv->numChannels;
+        opts->numBitsPerSmpl = drv->numBitsPerSmpl;
+        opts->usecPerBuf = drv->usecPerBuf;
+        opts->numBuffers = drv->numBuffers;
+    }
+
+    // Start the audio device
+    UINT8 ret = AudioDrv_Start(drv->drvData, deviceID);
+    if (ret != AERR_OK) {
+        return VGM_AUDIO_ERR_DRV_START;
+    }
+
+    // Set the callback
+    ret = AudioDrv_SetCallback(drv->drvData, AudioFillBuffer, drv);
+    if (ret != AERR_OK) {
+        // Callback failed - some drivers don't support it, but we require it
+        AudioDrv_Stop(drv->drvData);
+        return VGM_AUDIO_ERR_DRV_START;
+    }
+
+    drv->paused = 0;
+    return VGM_AUDIO_OK;
+}
+
+int vgm_audio_driver_stop(VgmAudioDriver* drv) {
+    if (!drv || !drv->drvData) return VGM_AUDIO_ERR_NULLPTR;
+
+    // Clear callback first
+    AudioDrv_SetCallback(drv->drvData, nullptr, nullptr);
+
+    // Stop the driver
+    UINT8 ret = AudioDrv_Stop(drv->drvData);
+    if (ret != AERR_OK) {
+        return VGM_AUDIO_ERR_DRV_START;
+    }
+
+    return VGM_AUDIO_OK;
+}
+
+int vgm_audio_driver_pause(VgmAudioDriver* drv) {
+    if (!drv || !drv->drvData) return VGM_AUDIO_ERR_NULLPTR;
+
+    drv->paused = 1;
+    AudioDrv_Pause(drv->drvData);
+    return VGM_AUDIO_OK;
+}
+
+int vgm_audio_driver_resume(VgmAudioDriver* drv) {
+    if (!drv || !drv->drvData) return VGM_AUDIO_ERR_NULLPTR;
+
+    drv->paused = 0;
+    AudioDrv_Resume(drv->drvData);
+    return VGM_AUDIO_OK;
+}
+
+uint32_t vgm_audio_driver_get_latency(VgmAudioDriver* drv) {
+    if (!drv || !drv->drvData) return 0;
+    return AudioDrv_GetLatency(drv->drvData);
+}
+
+/*
+ * Player binding
+ */
+
+int vgm_audio_driver_bind_player(VgmAudioDriver* drv, VgmPlayer* player) {
+    if (!drv || !player) return VGM_AUDIO_ERR_NULLPTR;
+
+    OSMutex_Lock(drv->renderMtx);
+    drv->boundPlayer = player;
+    OSMutex_Unlock(drv->renderMtx);
+
+    return VGM_AUDIO_OK;
+}
+
+void vgm_audio_driver_unbind_player(VgmAudioDriver* drv) {
+    if (!drv) return;
+
+    OSMutex_Lock(drv->renderMtx);
+    drv->boundPlayer = nullptr;
+    OSMutex_Unlock(drv->renderMtx);
+}
+
+/*
+ * Thread-safe player operations
+ */
+
+void vgm_audio_safe_seek(VgmAudioDriver* drv, double seconds) {
+    if (!drv || !drv->boundPlayer || seconds < 0.0) return;
+
+    OSMutex_Lock(drv->renderMtx);
+    uint32_t samples = (uint32_t)(seconds * drv->boundPlayer->sampleRate);
+    drv->boundPlayer->player.Seek(PLAYPOS_SAMPLE, samples);
+    OSMutex_Unlock(drv->renderMtx);
+}
+
+void vgm_audio_safe_reset(VgmAudioDriver* drv) {
+    if (!drv || !drv->boundPlayer) return;
+
+    OSMutex_Lock(drv->renderMtx);
+    drv->boundPlayer->player.Reset();
+    OSMutex_Unlock(drv->renderMtx);
+}
+
+void vgm_audio_safe_fade_out(VgmAudioDriver* drv) {
+    if (!drv || !drv->boundPlayer) return;
+
+    OSMutex_Lock(drv->renderMtx);
+    drv->boundPlayer->player.FadeOut();
+    OSMutex_Unlock(drv->renderMtx);
+}

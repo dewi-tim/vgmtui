@@ -1,7 +1,11 @@
 // Package ui provides the Bubbletea TUI for vgmtui.
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Colors used throughout the UI.
 var (
@@ -125,15 +129,30 @@ func DefaultStyles() Styles {
 }
 
 // PanelStyle returns a bordered panel style with the given dimensions.
+// width and height are the TOTAL outer dimensions including border.
 func (s Styles) PanelStyle(focused bool, width, height int) lipgloss.Style {
-	base := s.NormalBorder
+	borderColor := ColorMuted
 	if focused {
-		base = s.FocusedBorder
+		borderColor = ColorPrimary
 	}
-	return base.Width(width).Height(height)
+	// Inner dimensions after accounting for border (1 char each side)
+	innerWidth := width - 2
+	innerHeight := height - 2
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	if innerHeight < 1 {
+		innerHeight = 1
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder(), true, true, true, true). // top, right, bottom, left
+		BorderForeground(borderColor).
+		Width(innerWidth).
+		Height(innerHeight)
 }
 
 // RenderPanel renders content in a panel with a title.
+// width and height are the TOTAL outer dimensions including border.
 func (s Styles) RenderPanel(title, content string, focused bool, width, height int) string {
 	titleStyle := s.TitleMuted
 	if focused {
@@ -143,9 +162,26 @@ func (s Styles) RenderPanel(title, content string, focused bool, width, height i
 	// Render title
 	renderedTitle := titleStyle.Render(title)
 
+	// Inner height after border (2 lines) and title (1 line)
+	contentMaxHeight := height - 2 - 1
+	if contentMaxHeight < 1 {
+		contentMaxHeight = 1
+	}
+
+	// Truncate content if it exceeds the available height
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > contentMaxHeight {
+		contentLines = contentLines[:contentMaxHeight]
+	}
+	// Pad content to fill available space
+	for len(contentLines) < contentMaxHeight {
+		contentLines = append(contentLines, "")
+	}
+	content = strings.Join(contentLines, "\n")
+
 	// Build panel content with title at top
 	panelContent := lipgloss.JoinVertical(lipgloss.Left, renderedTitle, content)
 
-	// Apply border
+	// Apply border - PanelStyle now expects outer dimensions
 	return s.PanelStyle(focused, width, height).Render(panelContent)
 }

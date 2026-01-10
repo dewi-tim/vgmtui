@@ -178,6 +178,126 @@ const char* vgm_player_get_chip_name(VgmPlayer* p, uint32_t index);
 /* Get the emulation core name for a chip by index. Returns "" if invalid. */
 const char* vgm_player_get_chip_core(VgmPlayer* p, uint32_t index);
 
+/*
+ * =============================================================================
+ * Audio Driver API
+ * =============================================================================
+ * These functions wrap libvgm's audio driver system for direct audio output.
+ */
+
+/* Opaque audio driver handle */
+typedef struct VgmAudioDriver VgmAudioDriver;
+
+/* Audio error codes */
+#define VGM_AUDIO_OK              0
+#define VGM_AUDIO_ERR_INIT        1
+#define VGM_AUDIO_ERR_NO_DRIVERS  2
+#define VGM_AUDIO_ERR_DRV_CREATE  3
+#define VGM_AUDIO_ERR_DRV_START   4
+#define VGM_AUDIO_ERR_BIND        5
+#define VGM_AUDIO_ERR_NULLPTR     6
+
+/* Driver type constants (from libvgm AudioStructs.h) */
+#define VGM_ADRVTYPE_OUT   0x01  /* Stream to speakers */
+#define VGM_ADRVTYPE_DISK  0x02  /* Write to disk */
+
+/* Driver signature constants */
+#define VGM_ADRVSIG_ALSA   0x22  /* ALSA */
+#define VGM_ADRVSIG_PULSE  0x23  /* PulseAudio */
+
+/*
+ * Audio system lifecycle
+ */
+
+/* Initialize the audio system. Must be called before other audio functions. */
+int vgm_audio_init(void);
+
+/* Deinitialize the audio system. */
+void vgm_audio_deinit(void);
+
+/* Get the number of available audio drivers. */
+uint32_t vgm_audio_get_driver_count(void);
+
+/* Get the name of an audio driver by ID. Returns "" if invalid. */
+const char* vgm_audio_get_driver_name(uint32_t drvID);
+
+/* Get the signature (type identifier) of an audio driver. */
+uint8_t vgm_audio_get_driver_sig(uint32_t drvID);
+
+/* Get the type of an audio driver (VGM_ADRVTYPE_OUT, etc.). */
+uint8_t vgm_audio_get_driver_type(uint32_t drvID);
+
+/*
+ * Audio driver instance
+ */
+
+/* Create an audio driver instance. Returns NULL on failure. */
+VgmAudioDriver* vgm_audio_driver_create(uint32_t drvID);
+
+/* Destroy an audio driver instance and free resources. */
+void vgm_audio_driver_destroy(VgmAudioDriver* drv);
+
+/*
+ * Audio driver configuration (call before Start)
+ */
+
+/* Set sample rate in Hz (default: 44100). */
+void vgm_audio_driver_set_sample_rate(VgmAudioDriver* drv, uint32_t rate);
+
+/* Set number of channels (1=mono, 2=stereo, default: 2). */
+void vgm_audio_driver_set_channels(VgmAudioDriver* drv, uint8_t channels);
+
+/* Set bits per sample (8 or 16, default: 16). */
+void vgm_audio_driver_set_bits(VgmAudioDriver* drv, uint8_t bits);
+
+/* Set buffer time in microseconds (default: 10000 = 10ms). */
+void vgm_audio_driver_set_buffer_time(VgmAudioDriver* drv, uint32_t usec);
+
+/* Set number of buffers (default: 4). */
+void vgm_audio_driver_set_buffer_count(VgmAudioDriver* drv, uint32_t count);
+
+/*
+ * Audio driver control
+ */
+
+/* Start the audio driver with the specified device (0 = default). */
+int vgm_audio_driver_start(VgmAudioDriver* drv, uint32_t deviceID);
+
+/* Stop the audio driver. */
+int vgm_audio_driver_stop(VgmAudioDriver* drv);
+
+/* Pause audio output. */
+int vgm_audio_driver_pause(VgmAudioDriver* drv);
+
+/* Resume audio output. */
+int vgm_audio_driver_resume(VgmAudioDriver* drv);
+
+/* Get the current latency in milliseconds. */
+uint32_t vgm_audio_driver_get_latency(VgmAudioDriver* drv);
+
+/*
+ * Player binding
+ */
+
+/* Bind a player to the audio driver. Sets up the internal render callback. */
+int vgm_audio_driver_bind_player(VgmAudioDriver* drv, VgmPlayer* player);
+
+/* Unbind the player from the audio driver. */
+void vgm_audio_driver_unbind_player(VgmAudioDriver* drv);
+
+/*
+ * Thread-safe player operations (acquires render mutex)
+ */
+
+/* Seek to position - thread-safe version that acquires render mutex. */
+void vgm_audio_safe_seek(VgmAudioDriver* drv, double seconds);
+
+/* Reset playback - thread-safe version that acquires render mutex. */
+void vgm_audio_safe_reset(VgmAudioDriver* drv);
+
+/* Trigger fade-out - thread-safe version that acquires render mutex. */
+void vgm_audio_safe_fade_out(VgmAudioDriver* drv);
+
 #ifdef __cplusplus
 }
 #endif

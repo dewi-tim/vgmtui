@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/ebitengine/oto/v3"
 )
 
 const (
@@ -14,11 +13,15 @@ const (
 	DefaultSampleRate   = 44100
 	DefaultChannels     = 2
 	DefaultBitDepth     = 16
-	DefaultBufferSize   = 4096 // frames
 	DefaultLoopCount    = 2
 	DefaultFadeTime     = 4000 // ms
 	DefaultEndSilence   = 1000 // ms
 	DefaultTickInterval = 50 * time.Millisecond
+
+	// Audio buffer settings for libvgm audio driver
+	// Using smaller buffers than oto for lower latency
+	AudioBufferTimeUsec  = 10000 // 10ms per buffer
+	AudioBufferCount     = 8     // 80ms total latency
 )
 
 // Player is the high-level interface for VGM playback.
@@ -70,31 +73,30 @@ type Player interface {
 	Close() error
 }
 
-// AudioPlayer implements Player using libvgm and oto.
+// AudioPlayer implements Player using libvgm with native audio drivers.
 type AudioPlayer struct {
-	mu sync.RWMutex
+	// Atomic state for lock-free access
+	playingAtomic uint32 // 1 = playing, 0 = not
+	pausedAtomic  uint32 // 1 = paused, 0 = not
+
+	// Mutex for non-hot-path operations (track loading, config changes)
+	mu sync.Mutex
 
 	// libvgm player
 	vgm *LibvgmPlayer
 
-	// oto audio context and player
-	otoCtx    *oto.Context
-	otoPlayer *oto.Player
+	// libvgm audio driver (replaces oto)
+	audioDriver *AudioDriver
 
 	// Current track info
 	track     *Track
 	trackPath string
 
-	// Playback state
-	playing   bool
-	paused    bool
+	// Playback config (protected by mu)
 	volume    float64
 	speed     float64
 	loopCount int
-
-	// Audio buffer
 	sampleRate int
-	buffer     []int16
 
 	// Render goroutine control
 	ctx    context.Context
@@ -105,37 +107,90 @@ type AudioPlayer struct {
 	subMu       sync.RWMutex
 }
 
+// selectAudioDriver finds the best available audio driver.
+// Prefers PulseAudio, falls back to ALSA.
+func selectAudioDriver() (uint32, error) {
+	drivers := GetAudioDrivers()
+	if len(drivers) == 0 {
+		return 0, ErrAudioNoDrivers
+	}
+
+	// First pass: look for PulseAudio
+	for _, drv := range drivers {
+		if drv.Signature == AudioDriverSigPulse {
+			return drv.ID, nil
+		}
+	}
+
+	// Second pass: look for ALSA
+	for _, drv := range drivers {
+		if drv.Signature == AudioDriverSigALSA {
+			return drv.ID, nil
+		}
+	}
+
+	// Fallback: use first available output driver
+	return drivers[0].ID, nil
+}
+
 // NewAudioPlayer creates a new audio player.
 func NewAudioPlayer() (*AudioPlayer, error) {
+	// Initialize libvgm audio system
+	if err := InitAudioSystem(); err != nil {
+		return nil, fmt.Errorf("failed to initialize audio system: %w", err)
+	}
+
+	// Select best audio driver (PulseAudio > ALSA)
+	driverID, err := selectAudioDriver()
+	if err != nil {
+		DeinitAudioSystem()
+		return nil, fmt.Errorf("no audio drivers available: %w", err)
+	}
+
+	// Create audio driver instance
+	audioDriver, err := NewAudioDriver(driverID)
+	if err != nil {
+		DeinitAudioSystem()
+		return nil, fmt.Errorf("failed to create audio driver: %w", err)
+	}
+
+	// Configure audio driver
+	audioDriver.SetSampleRate(DefaultSampleRate)
+	audioDriver.SetChannels(DefaultChannels)
+	audioDriver.SetBits(DefaultBitDepth)
+	audioDriver.SetBufferTime(AudioBufferTimeUsec)
+	audioDriver.SetBufferCount(AudioBufferCount)
+
 	// Create libvgm player
 	vgm, err := NewLibvgmPlayer()
 	if err != nil {
+		audioDriver.Close()
+		DeinitAudioSystem()
 		return nil, fmt.Errorf("failed to create libvgm player: %w", err)
 	}
 
-	// Create oto audio context
-	otoOpts := &oto.NewContextOptions{
-		SampleRate:   DefaultSampleRate,
-		ChannelCount: DefaultChannels,
-		Format:       oto.FormatSignedInt16LE,
-	}
-
-	otoCtx, ready, err := oto.NewContext(otoOpts)
-	if err != nil {
+	// Bind player to audio driver
+	if err := audioDriver.BindPlayer(vgm); err != nil {
 		vgm.Close()
-		return nil, fmt.Errorf("failed to create audio context: %w", err)
+		audioDriver.Close()
+		DeinitAudioSystem()
+		return nil, fmt.Errorf("failed to bind player to audio driver: %w", err)
 	}
 
-	// Wait for audio context to be ready
-	<-ready
+	// Start audio driver (it will call the render callback when needed)
+	if err := audioDriver.Start(0); err != nil {
+		vgm.Close()
+		audioDriver.Close()
+		DeinitAudioSystem()
+		return nil, fmt.Errorf("failed to start audio driver: %w", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := &AudioPlayer{
 		vgm:         vgm,
-		otoCtx:      otoCtx,
+		audioDriver: audioDriver,
 		sampleRate:  DefaultSampleRate,
-		buffer:      make([]int16, DefaultBufferSize*DefaultChannels),
 		volume:      1.0,
 		speed:       1.0,
 		loopCount:   DefaultLoopCount,
@@ -149,6 +204,9 @@ func NewAudioPlayer() (*AudioPlayer, error) {
 	vgm.SetLoopCount(uint32(DefaultLoopCount))
 	vgm.SetFadeTime(DefaultFadeTime)
 	vgm.SetEndSilence(DefaultEndSilence)
+
+	// Audio driver is started but paused - it will render silence until
+	// a track is started with Play()
 
 	return p, nil
 }
@@ -198,14 +256,14 @@ func (p *AudioPlayer) Play() error {
 	}
 
 	// If paused, just resume
-	if p.paused {
-		p.paused = false
-		p.otoPlayer.Play()
+	if atomic.LoadUint32(&p.pausedAtomic) == 1 {
+		atomic.StoreUint32(&p.pausedAtomic, 0)
+		p.audioDriver.Resume()
 		return nil
 	}
 
 	// If already playing, do nothing
-	if p.playing {
+	if atomic.LoadUint32(&p.playingAtomic) == 1 {
 		return nil
 	}
 
@@ -218,15 +276,12 @@ func (p *AudioPlayer) Play() error {
 	track := p.vgm.GetTrack(p.trackPath)
 	p.track = &track
 
-	// Create audio stream
-	p.playing = true
-	p.paused = false
+	// Set atomic state flags
+	atomic.StoreUint32(&p.pausedAtomic, 0)
+	atomic.StoreUint32(&p.playingAtomic, 1)
 
-	// Create oto player with this as the reader
-	p.otoPlayer = p.otoCtx.NewPlayer(p)
-
-	// Start playback
-	p.otoPlayer.Play()
+	// Resume audio driver (it's already started, just might be paused)
+	p.audioDriver.Resume()
 
 	// Start tick goroutine
 	go p.tickLoop()
@@ -236,14 +291,10 @@ func (p *AudioPlayer) Play() error {
 
 // Pause pauses playback.
 func (p *AudioPlayer) Pause() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.playing && !p.paused {
-		p.paused = true
-		if p.otoPlayer != nil {
-			p.otoPlayer.Pause()
-		}
+	// Only set paused if currently playing and not already paused
+	if atomic.LoadUint32(&p.playingAtomic) == 1 && atomic.LoadUint32(&p.pausedAtomic) == 0 {
+		atomic.StoreUint32(&p.pausedAtomic, 1)
+		p.audioDriver.Pause()
 	}
 }
 
@@ -256,23 +307,23 @@ func (p *AudioPlayer) Stop() {
 }
 
 func (p *AudioPlayer) stopLocked() {
-	if p.playing {
-		p.playing = false
-		p.paused = false
-		if p.otoPlayer != nil {
-			p.otoPlayer.Close()
-			p.otoPlayer = nil
-		}
+	if atomic.LoadUint32(&p.playingAtomic) == 1 {
+		// Set atomic flags first
+		atomic.StoreUint32(&p.playingAtomic, 0)
+		atomic.StoreUint32(&p.pausedAtomic, 0)
+
+		// Stop libvgm (thread-safe via audio driver's mutex)
 		p.vgm.Stop()
+
+		// Pause audio output
+		p.audioDriver.Pause()
 	}
 }
 
 // Toggle toggles between play and pause.
 func (p *AudioPlayer) Toggle() {
-	p.mu.RLock()
-	playing := p.playing
-	paused := p.paused
-	p.mu.RUnlock()
+	playing := atomic.LoadUint32(&p.playingAtomic) == 1
+	paused := atomic.LoadUint32(&p.pausedAtomic) == 1
 
 	if playing {
 		if paused {
@@ -287,42 +338,31 @@ func (p *AudioPlayer) Toggle() {
 
 // Seek seeks to a position in the track.
 func (p *AudioPlayer) Seek(pos time.Duration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if pos < 0 {
 		pos = 0
 	}
-	p.vgm.Seek(pos)
+	// Use audio driver's thread-safe seek
+	p.audioDriver.SafeSeek(pos)
 }
 
 // SeekRelative seeks relative to current position.
 func (p *AudioPlayer) SeekRelative(delta time.Duration) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	current := p.vgm.Position()
 	newPos := current + delta
 	if newPos < 0 {
 		newPos = 0
 	}
-	p.vgm.Seek(newPos)
+	p.audioDriver.SafeSeek(newPos)
 }
 
 // FadeOut triggers a fade-out.
 func (p *AudioPlayer) FadeOut() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.vgm.FadeOut()
+	p.audioDriver.SafeFadeOut()
 }
 
 // Reset resets playback to the beginning.
 func (p *AudioPlayer) Reset() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.vgm.Reset()
+	p.audioDriver.SafeReset()
 }
 
 // SetVolume sets the volume (0.0 - 1.0+).
@@ -366,37 +406,42 @@ func (p *AudioPlayer) SetLoopCount(count int) {
 
 // Track returns metadata about the current track.
 func (p *AudioPlayer) Track() *Track {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	return p.track
 }
 
 // Info returns current playback information.
 func (p *AudioPlayer) Info() PlaybackInfo {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
+	// Get libvgm info - these CGO calls are safe without mutex
 	info := p.vgm.GetPlaybackInfo()
 
-	// Adjust state based on our paused flag
-	if p.paused {
+	// Lock-free atomic state checks
+	paused := atomic.LoadUint32(&p.pausedAtomic) == 1
+	playing := atomic.LoadUint32(&p.playingAtomic) == 1
+
+	// Adjust state based on our atomic flags
+	if paused {
 		info.State = StatePaused
-	} else if !p.playing {
+	} else if !playing {
 		info.State = StateStopped
 	}
 
+	// Brief lock only for config values
+	p.mu.Lock()
 	info.Volume = p.volume
 	info.Speed = p.speed
 	info.TotalLoops = p.loopCount
+	p.mu.Unlock()
 
 	return info
 }
 
 // IsLoaded returns true if a track is loaded.
 func (p *AudioPlayer) IsLoaded() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	return p.track != nil
 }
@@ -426,56 +471,6 @@ func (p *AudioPlayer) Unsubscribe(ch <-chan PlaybackInfo) {
 	}
 }
 
-// Read implements io.Reader for oto.
-// This is called by oto to get audio data.
-func (p *AudioPlayer) Read(buf []byte) (int, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if !p.playing || p.paused {
-		// Return silence when paused
-		for i := range buf {
-			buf[i] = 0
-		}
-		return len(buf), nil
-	}
-
-	// Calculate frames from bytes (stereo 16-bit)
-	frames := len(buf) / 4
-
-	// Ensure buffer is large enough
-	if len(p.buffer) < frames*2 {
-		p.buffer = make([]int16, frames*2)
-	}
-
-	// Render audio from libvgm
-	rendered := p.vgm.Render(uint32(frames), p.buffer)
-
-	// Check if playback finished
-	if rendered == 0 || p.vgm.IsFinished() {
-		p.playing = false
-		// Return silence
-		for i := range buf {
-			buf[i] = 0
-		}
-		return len(buf), nil
-	}
-
-	// Convert int16 samples to bytes (little-endian)
-	for i := 0; i < int(rendered)*2; i++ {
-		sample := p.buffer[i]
-		buf[i*2] = byte(sample)
-		buf[i*2+1] = byte(sample >> 8)
-	}
-
-	// Zero remaining buffer if not fully filled
-	for i := int(rendered) * 4; i < len(buf); i++ {
-		buf[i] = 0
-	}
-
-	return len(buf), nil
-}
-
 // tickLoop sends periodic playback info updates to subscribers.
 func (p *AudioPlayer) tickLoop() {
 	ticker := time.NewTicker(DefaultTickInterval)
@@ -486,11 +481,8 @@ func (p *AudioPlayer) tickLoop() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			p.mu.RLock()
-			playing := p.playing
-			p.mu.RUnlock()
-
-			if !playing {
+			// Lock-free state check
+			if atomic.LoadUint32(&p.playingAtomic) == 0 {
 				return
 			}
 
@@ -526,6 +518,14 @@ func (p *AudioPlayer) Close() error {
 	// Stop playback
 	p.stopLocked()
 
+	// Unbind and close audio driver
+	if p.audioDriver != nil {
+		p.audioDriver.UnbindPlayer()
+		p.audioDriver.Stop()
+		p.audioDriver.Close()
+		p.audioDriver = nil
+	}
+
 	// Close subscribers
 	p.subMu.Lock()
 	for ch := range p.subscribers {
@@ -534,8 +534,14 @@ func (p *AudioPlayer) Close() error {
 	p.subscribers = nil
 	p.subMu.Unlock()
 
-	// Close libvgm
-	p.vgm.Close()
+	// Close libvgm player
+	if p.vgm != nil {
+		p.vgm.Close()
+		p.vgm = nil
+	}
+
+	// Deinitialize audio system
+	DeinitAudioSystem()
 
 	return nil
 }
