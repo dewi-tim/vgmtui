@@ -81,6 +81,11 @@ type (
 
 	// ClearErrorMsg is sent to clear the error display.
 	ClearErrorMsg struct{}
+
+	// TrackChipsLoadedMsg is sent when chip info is loaded for the current track.
+	TrackChipsLoadedMsg struct {
+		Chips []player.ChipInfo
+	}
 )
 
 // Update handles messages and updates the model.
@@ -397,6 +402,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastError = ""
 		}
 		return m, nil
+
+	case TrackChipsLoadedMsg:
+		// Update chip info for current track
+		m.trackChips = msg.Chips
+		return m, nil
 	}
 
 	return m, tea.Batch(cmds...)
@@ -419,34 +429,83 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.togglePlayPause()
 
 	case key.Matches(msg, m.keyMap.NextTrack):
-		// Placeholder
+		if m.audioPlayer != nil {
+			m.audioPlayer.Stop()
+			nextIdx := m.playlist.NextTrack()
+			if nextIdx >= 0 {
+				if track := m.playlist.GetTrack(nextIdx); track != nil {
+					m.currentTrack = track
+					return m, playTrack(m.audioPlayer, track.Path)
+				}
+			}
+		}
 		m.playback.Position = 0
 		m.playback.CurrentLoop = 0
 		return m, nil
 
 	case key.Matches(msg, m.keyMap.PrevTrack):
-		// Placeholder
+		if m.audioPlayer != nil {
+			m.audioPlayer.Stop()
+			prevIdx := m.playlist.PrevTrack()
+			if prevIdx >= 0 {
+				if track := m.playlist.GetTrack(prevIdx); track != nil {
+					m.currentTrack = track
+					return m, playTrack(m.audioPlayer, track.Path)
+				}
+			}
+		}
 		m.playback.Position = 0
 		m.playback.CurrentLoop = 0
 		return m, nil
 
 	case key.Matches(msg, m.keyMap.Stop):
+		if m.audioPlayer != nil {
+			m.audioPlayer.Stop()
+		}
 		m.playback.State = StateStopped
 		m.playback.Position = 0
 		m.playback.CurrentLoop = 0
 		return m, nil
 
 	case key.Matches(msg, m.keyMap.SeekForward):
-		m.playback.Position += 5 * time.Second
-		if m.playback.Position > m.playback.Duration {
-			m.playback.Position = m.playback.Duration
+		if m.audioPlayer != nil {
+			m.audioPlayer.SeekRelative(5 * time.Second)
+		} else {
+			m.playback.Position += 5 * time.Second
+			if m.playback.Position > m.playback.Duration {
+				m.playback.Position = m.playback.Duration
+			}
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keyMap.SeekBackward):
-		m.playback.Position -= 5 * time.Second
-		if m.playback.Position < 0 {
-			m.playback.Position = 0
+		if m.audioPlayer != nil {
+			m.audioPlayer.SeekRelative(-5 * time.Second)
+		} else {
+			m.playback.Position -= 5 * time.Second
+			if m.playback.Position < 0 {
+				m.playback.Position = 0
+			}
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.VolumeUp):
+		m.volume += 0.1
+		if m.volume > 2.0 {
+			m.volume = 2.0
+		}
+		if m.audioPlayer != nil {
+			m.audioPlayer.SetVolume(m.volume)
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.VolumeDown):
+		m.volume -= 0.1
+		if m.volume < 0.0 {
+			m.volume = 0.0
+		}
+		if m.audioPlayer != nil {
+			m.audioPlayer.SetVolume(m.volume)
 		}
 		return m, nil
 
@@ -607,6 +666,7 @@ func loadTrackMetadata(ap *player.AudioPlayer, path string) tea.Cmd {
 }
 
 // playTrack returns a command that loads and plays a track.
+// After successful play, it returns chip info for the track.
 func playTrack(ap *player.AudioPlayer, path string) tea.Cmd {
 	return func() tea.Msg {
 		if err := ap.Load(path); err != nil {
@@ -614,6 +674,10 @@ func playTrack(ap *player.AudioPlayer, path string) tea.Cmd {
 		}
 		if err := ap.Play(); err != nil {
 			return ErrorMsg{Err: err}
+		}
+		// Return chip info after track is loaded and playing
+		if track := ap.Track(); track != nil {
+			return TrackChipsLoadedMsg{Chips: track.Chips}
 		}
 		return nil
 	}

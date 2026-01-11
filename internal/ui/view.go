@@ -66,12 +66,15 @@ func (m Model) View() string {
 	return mainView
 }
 
-// renderHelpOverlay renders the help popup on top of the main view.
+// renderHelpOverlay renders the help popup centered over the main view.
+// We replace entire lines to avoid ANSI escape code corruption.
 func (m Model) renderHelpOverlay(mainView string) string {
-	// Get the popup content
 	popup := m.helpPopup.View()
+	if popup == "" {
+		return mainView
+	}
 
-	// Calculate popup dimensions
+	// Get popup dimensions
 	popupLines := strings.Split(popup, "\n")
 	popupHeight := len(popupLines)
 	popupWidth := 0
@@ -81,7 +84,7 @@ func (m Model) renderHelpOverlay(mainView string) string {
 		}
 	}
 
-	// Calculate position to center the popup
+	// Calculate vertical centering
 	mainLines := strings.Split(mainView, "\n")
 	mainHeight := len(mainLines)
 
@@ -89,89 +92,33 @@ func (m Model) renderHelpOverlay(mainView string) string {
 	if startY < 0 {
 		startY = 0
 	}
-	startX := (m.width - popupWidth) / 2
-	if startX < 0 {
-		startX = 0
+
+	// Calculate horizontal padding to center popup
+	leftPad := (m.width - popupWidth) / 2
+	if leftPad < 0 {
+		leftPad = 0
 	}
 
-	// Create a new view with the popup overlaid
+	// Build result by replacing lines where popup appears
 	result := make([]string, mainHeight)
 	for i, line := range mainLines {
-		// Ensure line is wide enough
-		lineWidth := lipgloss.Width(line)
-		if lineWidth < m.width {
-			line = line + strings.Repeat(" ", m.width-lineWidth)
-		}
-
-		// Check if this line overlaps with the popup
 		popupLineIdx := i - startY
 		if popupLineIdx >= 0 && popupLineIdx < len(popupLines) {
+			// Replace this line with centered popup line
 			popupLine := popupLines[popupLineIdx]
-			popupLineWidth := lipgloss.Width(popupLine)
-
-			// Build the overlaid line
-			// Left part (before popup)
-			var newLine strings.Builder
-			if startX > 0 {
-				// Get characters before popup
-				newLine.WriteString(truncateToWidth(line, startX))
+			// Pad left, add popup content, pad right to fill width
+			paddedLine := strings.Repeat(" ", leftPad) + popupLine
+			currentWidth := lipgloss.Width(paddedLine)
+			if currentWidth < m.width {
+				paddedLine += strings.Repeat(" ", m.width-currentWidth)
 			}
-			// Popup content
-			newLine.WriteString(popupLine)
-			// Right part (after popup)
-			rightStart := startX + popupLineWidth
-			if rightStart < m.width {
-				remaining := substringFromWidth(line, rightStart)
-				newLine.WriteString(remaining)
-			}
-			result[i] = newLine.String()
+			result[i] = paddedLine
 		} else {
 			result[i] = line
 		}
 	}
 
 	return strings.Join(result, "\n")
-}
-
-// truncateToWidth truncates a string to fit within a given visual width.
-func truncateToWidth(s string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	currentWidth := 0
-	var result strings.Builder
-	for _, r := range s {
-		runeWidth := lipgloss.Width(string(r))
-		if currentWidth+runeWidth > width {
-			// Pad with spaces if needed
-			for currentWidth < width {
-				result.WriteRune(' ')
-				currentWidth++
-			}
-			break
-		}
-		result.WriteRune(r)
-		currentWidth += runeWidth
-	}
-	// Pad if string was too short
-	for currentWidth < width {
-		result.WriteRune(' ')
-		currentWidth++
-	}
-	return result.String()
-}
-
-// substringFromWidth returns the portion of a string starting from a given visual width.
-func substringFromWidth(s string, startWidth int) string {
-	currentWidth := 0
-	for i, r := range s {
-		runeWidth := lipgloss.Width(string(r))
-		if currentWidth >= startWidth {
-			return s[i:]
-		}
-		currentWidth += runeWidth
-	}
-	return ""
 }
 
 // renderTooSmall renders a message when the terminal is too small.

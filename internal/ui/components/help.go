@@ -127,69 +127,52 @@ func (h HelpPopup) View() string {
 		return ""
 	}
 
-	content := h.buildHelpContent()
-	h.viewport.SetContent(content)
-
 	// Calculate popup dimensions
-	popupWidth := h.width
-	if popupWidth > h.width-4 {
-		popupWidth = h.width - 4
+	popupWidth := h.width * 70 / 100
+	if popupWidth < 45 {
+		popupWidth = 45
 	}
-	if popupWidth < 40 {
-		popupWidth = 40
-	}
-
-	popupHeight := h.height
-	if popupHeight > h.height-4 {
-		popupHeight = h.height - 4
-	}
-	if popupHeight < 15 {
-		popupHeight = 15
+	if popupWidth > 60 {
+		popupWidth = 60
 	}
 
-	// Update viewport size
-	h.viewport.Width = popupWidth - 4
-	h.viewport.Height = popupHeight - 4
+	popupHeight := h.height * 80 / 100
+	if popupHeight < 20 {
+		popupHeight = 20
+	}
+	if popupHeight > 35 {
+		popupHeight = 35
+	}
 
-	// Build the popup
-	title := h.titleStyle.Render(" Help ")
+	// Build the popup with title above border
+	title := h.titleStyle.Render("Help")
 	footer := h.footerStyle.Render("Press ? or Esc to close")
 
 	viewportContent := h.viewport.View()
 
-	// Create the box content
-	boxContent := lipgloss.JoinVertical(lipgloss.Left,
+	// Footer centered
+	footerLine := lipgloss.NewStyle().Width(popupWidth - 4).Align(lipgloss.Center).Render(footer)
+
+	// Combine viewport and footer
+	innerContent := lipgloss.JoinVertical(lipgloss.Left,
 		viewportContent,
 		"",
-		lipgloss.NewStyle().Width(popupWidth-4).Align(lipgloss.Center).Render(footer),
+		footerLine,
 	)
 
-	// Apply border with title
+	// Apply border
 	box := h.borderStyle.
+		Padding(0, 1).
 		Width(popupWidth).
-		Height(popupHeight).
-		Render(boxContent)
+		Render(innerContent)
 
-	// Add title to top border
-	lines := strings.Split(box, "\n")
-	if len(lines) > 0 {
-		// Insert title into top border line
-		borderLine := lines[0]
-		titlePos := (lipgloss.Width(borderLine) - lipgloss.Width(title)) / 2
-		if titlePos > 2 {
-			runes := []rune(borderLine)
-			titleRunes := []rune(title)
-			for i, r := range titleRunes {
-				if titlePos+i < len(runes) {
-					runes[titlePos+i] = r
-				}
-			}
-			lines[0] = string(runes)
-		}
-		box = strings.Join(lines, "\n")
-	}
+	// Title centered above box
+	titleLine := lipgloss.NewStyle().
+		Width(popupWidth).
+		Align(lipgloss.Center).
+		Render(title)
 
-	return box
+	return lipgloss.JoinVertical(lipgloss.Center, titleLine, box)
 }
 
 // buildHelpContent creates the help text content.
@@ -198,7 +181,7 @@ func (h HelpPopup) buildHelpContent() string {
 
 	// Helper to add a keybinding line
 	addKey := func(key, desc string) {
-		keyPadded := lipgloss.NewStyle().Width(12).Render(h.keyStyle.Render(key))
+		keyPadded := lipgloss.NewStyle().Width(14).Render(h.keyStyle.Render(key))
 		b.WriteString(keyPadded)
 		b.WriteString(h.descStyle.Render(desc))
 		b.WriteString("\n")
@@ -230,13 +213,14 @@ func (h HelpPopup) buildHelpContent() string {
 	addKey("+/=", "Volume up")
 	addKey("-", "Volume down")
 
-	// Browser
-	addCategory("Browser")
+	// Browser/Library
+	addCategory("Browser/Library")
 	addKey("j/k", "Navigate up/down")
 	addKey("g/G", "Go to top/bottom")
 	addKey("PgUp/Dn", "Page up/down")
-	addKey("Enter/l", "Open directory/select file")
-	addKey("Backspace/h", "Go to parent directory")
+	addKey("Enter/l", "Open/select")
+	addKey("Backspace/h", "Go back/collapse")
+	addKey("a", "Add all from game/system")
 	addKey(".", "Toggle hidden files")
 
 	// Playlist
@@ -247,6 +231,9 @@ func (h HelpPopup) buildHelpContent() string {
 	addKey("Enter/l", "Play selected track")
 	addKey("d", "Remove selected track")
 	addKey("D", "Clear playlist")
+	addKey("J/K", "Move track down/up")
+	addKey("r", "Shuffle playlist")
+	addKey("m", "Cycle loop mode")
 
 	return b.String()
 }
@@ -280,6 +267,7 @@ func (h *HelpPopup) SetSize(width, height int) {
 // Show makes the help popup visible.
 func (h *HelpPopup) Show() {
 	h.visible = true
+	h.viewport.SetContent(h.buildHelpContent())
 	h.viewport.GotoTop()
 }
 

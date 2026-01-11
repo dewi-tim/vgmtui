@@ -186,22 +186,31 @@ func (p Playlist) Update(msg tea.Msg) (Playlist, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle navigation keys directly - don't forward to table
+		// to avoid double-triggering (table also handles j/k/up/down)
 		switch {
 		case key.Matches(msg, p.keyMap.Up):
 			p.table.MoveUp(1)
+			return p, nil
 		case key.Matches(msg, p.keyMap.Down):
 			p.table.MoveDown(1)
+			return p, nil
 		case key.Matches(msg, p.keyMap.Top):
 			p.table.GotoTop()
+			return p, nil
 		case key.Matches(msg, p.keyMap.Bottom):
 			p.table.GotoBottom()
+			return p, nil
 		case key.Matches(msg, p.keyMap.PageUp):
 			p.table.MoveUp(p.table.Height())
+			return p, nil
 		case key.Matches(msg, p.keyMap.PageDown):
 			p.table.MoveDown(p.table.Height())
+			return p, nil
 		}
 	}
 
+	// Forward other messages to table
 	var cmd tea.Cmd
 	p.table, cmd = p.table.Update(msg)
 	return p, cmd

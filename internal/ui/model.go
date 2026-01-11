@@ -76,6 +76,7 @@ type Model struct {
 	// Playback state
 	playback     PlaybackInfo
 	currentTrack *Track
+	volume       float64 // Volume level (0.0 - 1.0+)
 
 	// Audio player (nil in TUI-only mode)
 	audioPlayer *player.AudioPlayer
@@ -142,6 +143,7 @@ func NewWithPlayer(ap *player.AudioPlayer) Model {
 		keyMap:      DefaultKeyMap(),
 		styles:      DefaultStyles(),
 		audioPlayer: ap,
+		volume:      1.0,
 		playback: PlaybackInfo{
 			State:      StateStopped,
 			TotalLoops: 2,
