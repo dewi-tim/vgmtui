@@ -105,6 +105,9 @@ type AudioPlayer struct {
 	// Subscribers for playback info updates
 	subscribers map[chan PlaybackInfo]struct{}
 	subMu       sync.RWMutex
+
+	// WaitGroup to track tickLoop goroutine
+	tickWg sync.WaitGroup
 }
 
 // selectAudioDriver finds the best available audio driver.
@@ -251,6 +254,68 @@ func (p *AudioPlayer) Play() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	return p.playLocked()
+}
+
+// Pause pauses playback.
+func (p *AudioPlayer) Pause() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.pauseLocked()
+}
+
+// Stop stops playback.
+func (p *AudioPlayer) Stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.stopLocked()
+}
+
+func (p *AudioPlayer) stopLocked() {
+	if atomic.LoadUint32(&p.playingAtomic) == 1 {
+		// Set atomic flags first
+		atomic.StoreUint32(&p.playingAtomic, 0)
+		atomic.StoreUint32(&p.pausedAtomic, 0)
+
+		// Stop libvgm (thread-safe via audio driver's mutex)
+		p.vgm.Stop()
+
+		// Pause audio output
+		p.audioDriver.Pause()
+	}
+}
+
+// Toggle toggles between play and pause.
+func (p *AudioPlayer) Toggle() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	playing := atomic.LoadUint32(&p.playingAtomic) == 1
+	paused := atomic.LoadUint32(&p.pausedAtomic) == 1
+
+	if playing {
+		if paused {
+			p.playLocked()
+		} else {
+			p.pauseLocked()
+		}
+	} else {
+		p.playLocked()
+	}
+}
+
+// pauseLocked pauses playback (must be called with mu held).
+func (p *AudioPlayer) pauseLocked() {
+	if atomic.LoadUint32(&p.playingAtomic) == 1 && atomic.LoadUint32(&p.pausedAtomic) == 0 {
+		atomic.StoreUint32(&p.pausedAtomic, 1)
+		p.audioDriver.Pause()
+	}
+}
+
+// playLocked starts or resumes playback (must be called with mu held).
+func (p *AudioPlayer) playLocked() error {
 	if p.track == nil {
 		return fmt.Errorf("no track loaded")
 	}
@@ -283,57 +348,11 @@ func (p *AudioPlayer) Play() error {
 	// Resume audio driver (it's already started, just might be paused)
 	p.audioDriver.Resume()
 
-	// Start tick goroutine
+	// Start tick goroutine with WaitGroup tracking
+	p.tickWg.Add(1)
 	go p.tickLoop()
 
 	return nil
-}
-
-// Pause pauses playback.
-func (p *AudioPlayer) Pause() {
-	// Only set paused if currently playing and not already paused
-	if atomic.LoadUint32(&p.playingAtomic) == 1 && atomic.LoadUint32(&p.pausedAtomic) == 0 {
-		atomic.StoreUint32(&p.pausedAtomic, 1)
-		p.audioDriver.Pause()
-	}
-}
-
-// Stop stops playback.
-func (p *AudioPlayer) Stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.stopLocked()
-}
-
-func (p *AudioPlayer) stopLocked() {
-	if atomic.LoadUint32(&p.playingAtomic) == 1 {
-		// Set atomic flags first
-		atomic.StoreUint32(&p.playingAtomic, 0)
-		atomic.StoreUint32(&p.pausedAtomic, 0)
-
-		// Stop libvgm (thread-safe via audio driver's mutex)
-		p.vgm.Stop()
-
-		// Pause audio output
-		p.audioDriver.Pause()
-	}
-}
-
-// Toggle toggles between play and pause.
-func (p *AudioPlayer) Toggle() {
-	playing := atomic.LoadUint32(&p.playingAtomic) == 1
-	paused := atomic.LoadUint32(&p.pausedAtomic) == 1
-
-	if playing {
-		if paused {
-			p.Play()
-		} else {
-			p.Pause()
-		}
-	} else {
-		p.Play()
-	}
 }
 
 // Seek seeks to a position in the track.
@@ -446,6 +465,30 @@ func (p *AudioPlayer) IsLoaded() bool {
 	return p.track != nil
 }
 
+// State returns the current playback state.
+// This provides the actual player state without tick delay.
+// It checks both atomic flags and the underlying libvgm state.
+func (p *AudioPlayer) State() PlayState {
+	paused := atomic.LoadUint32(&p.pausedAtomic) == 1
+	playing := atomic.LoadUint32(&p.playingAtomic) == 1
+
+	if paused {
+		return StatePaused
+	}
+	if !playing {
+		return StateStopped
+	}
+
+	// Check if libvgm reports track ended (even if our flags say playing)
+	// This handles the case where track naturally ended but Stop() wasn't called yet
+	info := p.vgm.GetPlaybackInfo()
+	if info.State == StateStopped {
+		return StateStopped
+	}
+
+	return StatePlaying
+}
+
 // Subscribe returns a channel that receives playback info updates.
 func (p *AudioPlayer) Subscribe() <-chan PlaybackInfo {
 	p.subMu.Lock()
@@ -473,6 +516,8 @@ func (p *AudioPlayer) Unsubscribe(ch <-chan PlaybackInfo) {
 
 // tickLoop sends periodic playback info updates to subscribers.
 func (p *AudioPlayer) tickLoop() {
+	defer p.tickWg.Done()
+
 	ticker := time.NewTicker(DefaultTickInterval)
 	defer ticker.Stop()
 
@@ -510,13 +555,20 @@ func (p *AudioPlayer) tickLoop() {
 // Close releases all resources.
 func (p *AudioPlayer) Close() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Cancel tick loop
 	p.cancel()
 
 	// Stop playback
 	p.stopLocked()
+
+	p.mu.Unlock()
+
+	// Wait for tickLoop goroutine to exit before closing channels
+	p.tickWg.Wait()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	// Unbind and close audio driver
 	if p.audioDriver != nil {
@@ -526,7 +578,7 @@ func (p *AudioPlayer) Close() error {
 		p.audioDriver = nil
 	}
 
-	// Close subscribers
+	// Close subscribers (safe now that tickLoop has exited)
 	p.subMu.Lock()
 	for ch := range p.subscribers {
 		close(ch)

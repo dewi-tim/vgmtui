@@ -14,12 +14,13 @@ import (
 // Track represents a track in the playlist.
 // This is a simplified version to avoid circular imports with the player package.
 type Track struct {
-	Path     string
-	Title    string
-	Game     string
-	System   string
-	Composer string
-	Duration time.Duration
+	Path        string
+	Title       string
+	Game        string
+	System      string
+	Composer    string
+	Duration    time.Duration
+	TrackNumber int
 }
 
 // PlaylistKeyMap defines keybindings for the playlist component.

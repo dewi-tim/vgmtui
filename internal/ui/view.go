@@ -137,7 +137,7 @@ func (m Model) renderLibrary(width, height int) string {
 	// Render the appropriate browser component
 	var content string
 	var title string
-	if m.useLibrary && m.libBrowser != nil {
+	if m.useLibrary {
 		content = m.libBrowser.View()
 		title = "Library"
 	} else {
@@ -353,12 +353,21 @@ func (m Model) renderFooter() string {
 
 	switch m.focus {
 	case FocusBrowser:
-		content.WriteString(keyStyle.Render("Enter"))
-		content.WriteString(helpStyle.Render(":add "))
-		content.WriteString(keyStyle.Render("."))
-		content.WriteString(helpStyle.Render(":hidden "))
-		content.WriteString(keyStyle.Render("Tab"))
-		content.WriteString(helpStyle.Render(":playlist "))
+		if m.useLibrary {
+			content.WriteString(keyStyle.Render("Enter"))
+			content.WriteString(helpStyle.Render(":play "))
+			content.WriteString(keyStyle.Render("a"))
+			content.WriteString(helpStyle.Render(":add all "))
+			content.WriteString(keyStyle.Render("Tab"))
+			content.WriteString(helpStyle.Render(":playlist "))
+		} else {
+			content.WriteString(keyStyle.Render("Enter"))
+			content.WriteString(helpStyle.Render(":add "))
+			content.WriteString(keyStyle.Render("."))
+			content.WriteString(helpStyle.Render(":hidden "))
+			content.WriteString(keyStyle.Render("Tab"))
+			content.WriteString(helpStyle.Render(":playlist "))
+		}
 	case FocusPlaylist:
 		content.WriteString(keyStyle.Render("Enter"))
 		content.WriteString(helpStyle.Render(":play "))

@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/dewi-tim/vgmtui/internal/library"
@@ -53,13 +52,12 @@ type Model struct {
 	focus Focus
 
 	// UI Components
-	browser    components.Browser      // File browser (fallback mode)
-	libBrowser *components.LibBrowser  // Library browser (main mode)
-	lib        *library.Library        // Music library
-	useLibrary bool                    // Whether to use library browser
+	browser    components.Browser     // File browser (fallback mode)
+	libBrowser components.LibBrowser  // Library browser (main mode)
+	lib        *library.Library       // Music library
+	useLibrary bool                   // Whether to use library browser
 	playlist   components.Playlist
 	progress   components.ProgressBar
-	help       help.Model
 	helpPopup  components.HelpPopup
 
 	// Key bindings
@@ -77,6 +75,7 @@ type Model struct {
 	playback     PlaybackInfo
 	currentTrack *Track
 	volume       float64 // Volume level (0.0 - 1.0+)
+	trackLoading bool    // True while a playTrack command is in flight
 
 	// Audio player (nil in TUI-only mode)
 	audioPlayer *player.AudioPlayer
@@ -114,7 +113,7 @@ func NewWithPlayer(ap *player.AudioPlayer) Model {
 
 	// Initialize library and library browser if ~/VGM exists
 	var lib *library.Library
-	var libBrowser *components.LibBrowser
+	var libBrowser components.LibBrowser
 	if useLibrary {
 		lib = library.New(vgmDir)
 		libBrowser = components.NewLibBrowser(lib)
@@ -138,7 +137,6 @@ func NewWithPlayer(ap *player.AudioPlayer) Model {
 		useLibrary:  useLibrary,
 		playlist:    playlist,
 		progress:    components.NewProgressBar(),
-		help:        help.New(),
 		helpPopup:   components.NewHelpPopup(),
 		keyMap:      DefaultKeyMap(),
 		styles:      DefaultStyles(),
@@ -163,7 +161,7 @@ func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 
 	// Initialize browser based on mode
-	if m.useLibrary && m.libBrowser != nil {
+	if m.useLibrary {
 		cmds = append(cmds, m.libBrowser.Init())
 	} else {
 		cmds = append(cmds, m.browser.Init())
@@ -183,7 +181,7 @@ func listenForPlayback(sub <-chan player.PlaybackInfo) tea.Cmd {
 		info, ok := <-sub
 		if !ok {
 			// Channel closed
-			return nil
+			return PlaybackChannelClosedMsg{}
 		}
 		return PlayerTickMsg{Info: info}
 	}
@@ -193,6 +191,9 @@ func listenForPlayback(sub <-chan player.PlaybackInfo) tea.Cmd {
 type PlayerTickMsg struct {
 	Info player.PlaybackInfo
 }
+
+// PlaybackChannelClosedMsg is sent when the playback subscription channel closes.
+type PlaybackChannelClosedMsg struct{}
 
 // TrackEndedMsg is sent when the current track finishes playing.
 type TrackEndedMsg struct{}

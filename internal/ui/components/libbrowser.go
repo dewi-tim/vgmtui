@@ -172,9 +172,14 @@ type LibTracksSelectedMsg struct {
 	Tracks []library.Track
 }
 
+// LibTrackPlayMsg is sent when a track should be added and played immediately.
+type LibTrackPlayMsg struct {
+	Track library.Track
+}
+
 // NewLibBrowser creates a new library browser.
-func NewLibBrowser(lib *library.Library) *LibBrowser {
-	b := &LibBrowser{
+func NewLibBrowser(lib *library.Library) LibBrowser {
+	return LibBrowser{
 		lib:      lib,
 		root:     make([]*TreeNode, 0),
 		flatList: make([]*TreeNode, 0),
@@ -188,7 +193,6 @@ func NewLibBrowser(lib *library.Library) *LibBrowser {
 		styles:   DefaultLibBrowserStyles(),
 		scanning: false,
 	}
-	return b
 }
 
 // Init initializes the library browser and starts scanning.
@@ -281,7 +285,7 @@ func (b *LibBrowser) addToFlatList(node *TreeNode, depth int) {
 }
 
 // Update handles messages and updates the browser state.
-func (b *LibBrowser) Update(msg tea.Msg) (*LibBrowser, tea.Cmd) {
+func (b LibBrowser) Update(msg tea.Msg) (LibBrowser, tea.Cmd) {
 	switch msg := msg.(type) {
 	case LibBrowserScanCompleteMsg:
 		b.scanning = false
@@ -302,7 +306,7 @@ func (b *LibBrowser) Update(msg tea.Msg) (*LibBrowser, tea.Cmd) {
 }
 
 // handleKeyMsg handles keyboard input when focused.
-func (b *LibBrowser) handleKeyMsg(msg tea.KeyMsg) (*LibBrowser, tea.Cmd) {
+func (b LibBrowser) handleKeyMsg(msg tea.KeyMsg) (LibBrowser, tea.Cmd) {
 	switch {
 	case key.Matches(msg, b.keyMap.Up):
 		b.moveUp()
@@ -342,25 +346,45 @@ func (b *LibBrowser) handleKeyMsg(msg tea.KeyMsg) (*LibBrowser, tea.Cmd) {
 }
 
 // handleEnter handles Enter key - expand/collapse or select track.
-func (b *LibBrowser) handleEnter() (*LibBrowser, tea.Cmd) {
-	if len(b.flatList) == 0 {
+func (b LibBrowser) handleEnter() (LibBrowser, tea.Cmd) {
+	if len(b.flatList) == 0 || b.selected < 0 || b.selected >= len(b.flatList) {
 		return b, nil
 	}
 
 	node := b.flatList[b.selected]
 
 	switch node.Type {
-	case NodeSystem, NodeGame:
-		// Toggle expanded state
-		node.Expanded = !node.Expanded
+	case NodeSystem:
+		// Accordion: collapse all other systems, toggle this one
+		expanding := !node.Expanded
+		for _, sys := range b.root {
+			sys.Expanded = false
+			// Also collapse all games within
+			for _, game := range sys.Children {
+				game.Expanded = false
+			}
+		}
+		node.Expanded = expanding
+		b.rebuildFlatList()
+		return b, nil
+
+	case NodeGame:
+		// Accordion: collapse sibling games, toggle this one
+		expanding := !node.Expanded
+		if node.Parent != nil {
+			for _, sibling := range node.Parent.Children {
+				sibling.Expanded = false
+			}
+		}
+		node.Expanded = expanding
 		b.rebuildFlatList()
 		return b, nil
 
 	case NodeTrack:
-		// Select the track
+		// Add and play the track
 		if node.Track != nil {
 			return b, func() tea.Msg {
-				return LibTrackSelectedMsg{Track: *node.Track}
+				return LibTrackPlayMsg{Track: *node.Track}
 			}
 		}
 	}
@@ -369,8 +393,8 @@ func (b *LibBrowser) handleEnter() (*LibBrowser, tea.Cmd) {
 }
 
 // handleBack handles Back key - collapse node or go to parent.
-func (b *LibBrowser) handleBack() (*LibBrowser, tea.Cmd) {
-	if len(b.flatList) == 0 {
+func (b LibBrowser) handleBack() (LibBrowser, tea.Cmd) {
+	if len(b.flatList) == 0 || b.selected < 0 || b.selected >= len(b.flatList) {
 		return b, nil
 	}
 
@@ -398,8 +422,8 @@ func (b *LibBrowser) handleBack() (*LibBrowser, tea.Cmd) {
 }
 
 // handleAddAll handles adding all tracks from selected game/system.
-func (b *LibBrowser) handleAddAll() (*LibBrowser, tea.Cmd) {
-	if len(b.flatList) == 0 {
+func (b LibBrowser) handleAddAll() (LibBrowser, tea.Cmd) {
+	if len(b.flatList) == 0 || b.selected < 0 || b.selected >= len(b.flatList) {
 		return b, nil
 	}
 
@@ -600,7 +624,7 @@ func (b *LibBrowser) View() string {
 			content = fmt.Sprintf("%s %s", marker, node.Name)
 
 		case NodeTrack:
-			content = fmt.Sprintf(" -  %s", node.Name)
+			content = fmt.Sprintf("    %s", node.Name)
 		}
 
 		// Fit to width (cursor=2, indent=2*depth, padding=2)
@@ -608,9 +632,7 @@ func (b *LibBrowser) View() string {
 		if maxWidth < 10 {
 			maxWidth = 10
 		}
-		if len(content) > maxWidth {
-			content = content[:maxWidth-3] + "..."
-		}
+		content = b.fitName(content, maxWidth, isSelected)
 
 		// Apply styling
 		var styledContent string
@@ -698,4 +720,29 @@ func (b *LibBrowser) SelectedNode() *TreeNode {
 		return nil
 	}
 	return b.flatList[b.selected]
+}
+
+// fitName truncates or scrolls a name to fit within the given width.
+// For selected items, it scrolls to show the end of long names.
+// For non-selected items, it truncates with "..." suffix.
+func (b *LibBrowser) fitName(name string, maxWidth int, isSelected bool) string {
+	if len(name) <= maxWidth {
+		return name
+	}
+
+	if isSelected {
+		// Scroll: show the end portion with "..." prefix
+		visibleLen := maxWidth - 3 // Account for "..."
+		if visibleLen < 1 {
+			visibleLen = 1
+		}
+		return "..." + name[len(name)-visibleLen:]
+	}
+
+	// Truncate: show the beginning with "..." suffix
+	visibleLen := maxWidth - 3 // Account for "..."
+	if visibleLen < 1 {
+		visibleLen = 1
+	}
+	return name[:visibleLen] + "..."
 }
