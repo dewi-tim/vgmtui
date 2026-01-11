@@ -25,6 +25,7 @@
 #include <player/gymplayer.hpp>
 #include <emu/SoundDevs.h>
 #include <emu/SoundEmu.h>
+#include <emu/EmuCores.h>
 
 // FourCC constants for player types
 #define FCC_VGM  0x56474D00
@@ -359,6 +360,10 @@ int vgm_player_start(VgmPlayer* p) {
 
     UINT8 ret = p->player.Start();
     if (ret) return VGM_ERR_STATE;
+
+    // Process the VGM initialization block (commands before first wait)
+    // This is critical for chips like RF5C164 that need PCM data loaded
+    p->player.Render(0, NULL);
 
     // Enumerate chips after starting (need to start for core info)
     enumerateChips(p);
