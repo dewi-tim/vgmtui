@@ -464,13 +464,13 @@ func (b Browser) goToParent() (Browser, tea.Cmd) {
 		b.readDir(parent),
 		func() tea.Msg { return DirChangedMsg{Path: parent} },
 		// After reading, try to select the directory we came from
-		func() tea.Msg { return browserSelectNameMsg{name: currentName} },
+		func() tea.Msg { return BrowserSelectNameMsg{Name: currentName} },
 	)
 }
 
-// browserSelectNameMsg is used internally to select a specific entry by name.
-type browserSelectNameMsg struct {
-	name string
+// BrowserSelectNameMsg is sent to select a specific entry by name after navigating up.
+type BrowserSelectNameMsg struct {
+	Name string
 }
 
 // HandleSelectName handles selecting an entry by name (used after navigating up).

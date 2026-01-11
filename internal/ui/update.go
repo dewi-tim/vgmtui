@@ -12,11 +12,6 @@ import (
 	"github.com/dewi-tim/vgmtui/internal/ui/components"
 )
 
-// browserSelectNameMsg is used internally to select a specific entry by name.
-type browserSelectNameMsg struct {
-	name string
-}
-
 // Message types for the TUI.
 type (
 	// TickMsg is sent periodically to update the progress bar (mock mode only).
@@ -154,6 +149,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case components.LibBrowserScanCompleteMsg:
 		// Library scan completed
+		if msg.Err != nil {
+			// Propagate scan error to UI
+			m.lastError = "Library scan failed: " + msg.Err.Error()
+			m.errorTime = time.Now()
+		}
 		if m.libBrowser != nil {
 			var cmd tea.Cmd
 			m.libBrowser, cmd = m.libBrowser.Update(msg)
@@ -166,7 +166,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case components.LibTrackSelectedMsg:
 		// Single track selected from library
 		if m.audioPlayer != nil {
-			return m, loadLibTrackMetadata(m.audioPlayer, msg.Track)
+			return m, loadLibTrackMetadata(msg.Track)
 		}
 		// Mock mode
 		m.currentTrack = &Track{
@@ -205,7 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A file was selected in the browser
 		if m.audioPlayer != nil {
 			// Load metadata from the real player
-			return m, loadTrackMetadata(m.audioPlayer, msg.Path)
+			return m, loadTrackMetadata(msg.Path)
 		}
 		// Mock mode: just show filename
 		m.currentTrack = &Track{
@@ -230,9 +230,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Directory changed - nothing special to do for now
 		return m, nil
 
-	case browserSelectNameMsg:
-		// Internal message to select a specific entry by name
-		m.browser.HandleSelectName(msg.name)
+	case components.BrowserSelectNameMsg:
+		// Message to select a specific entry by name after navigating up
+		m.browser.HandleSelectName(msg.Name)
 		return m, nil
 
 	case PlayerTickMsg:
@@ -626,28 +626,12 @@ func (m Model) togglePlayPause() (tea.Model, tea.Cmd) {
 // loadTrackMetadata returns a command that loads track metadata without
 // affecting the current playback state. It uses a separate player instance
 // to read metadata, so it can be called while music is playing.
-func loadTrackMetadata(ap *player.AudioPlayer, path string) tea.Cmd {
-	// Note: ap is not used directly here anymore, but kept for API consistency
-	_ = ap
+func loadTrackMetadata(path string) tea.Cmd {
 	return func() tea.Msg {
 		// Read metadata using a temporary player instance
 		track, err := player.ReadTrackMetadata(path)
 		if err != nil {
-			// Return error along with basic track info
-			return tea.Batch(
-				func() tea.Msg {
-					return ErrorMsg{Err: err}
-				},
-				func() tea.Msg {
-					return TrackMetadataLoadedMsg{
-						Track: Track{
-							Path:  path,
-							Title: filepath.Base(path),
-							Game:  "(load error)",
-						},
-					}
-				},
-			)()
+			return ErrorMsg{Err: err}
 		}
 
 		// Convert player.Track to components.Track
@@ -692,29 +676,12 @@ func defaultString(s, def string) string {
 }
 
 // loadLibTrackMetadata returns a command that loads track metadata from a library track.
-func loadLibTrackMetadata(ap *player.AudioPlayer, t library.Track) tea.Cmd {
-	_ = ap
+func loadLibTrackMetadata(t library.Track) tea.Cmd {
 	return func() tea.Msg {
 		// Read full metadata using a temporary player instance
 		track, err := player.ReadTrackMetadata(t.Path)
 		if err != nil {
-			return tea.Batch(
-				func() tea.Msg {
-					return ErrorMsg{Err: err}
-				},
-				func() tea.Msg {
-					return TrackMetadataLoadedMsg{
-						Track: Track{
-							Path:     t.Path,
-							Title:    t.Title,
-							Game:     t.Game,
-							System:   t.System,
-							Composer: t.Composer,
-							Duration: t.Duration,
-						},
-					}
-				},
-			)()
+			return ErrorMsg{Err: err}
 		}
 
 		return TrackMetadataLoadedMsg{

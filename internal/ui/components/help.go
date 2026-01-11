@@ -231,9 +231,6 @@ func (h HelpPopup) buildHelpContent() string {
 	addKey("Enter/l", "Play selected track")
 	addKey("d", "Remove selected track")
 	addKey("D", "Clear playlist")
-	addKey("J/K", "Move track down/up")
-	addKey("r", "Shuffle playlist")
-	addKey("m", "Cycle loop mode")
 
 	return b.String()
 }
