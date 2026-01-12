@@ -23,7 +23,8 @@ type BrowserKeyMap struct {
 	PageDown     key.Binding
 	GoToTop      key.Binding
 	GoToBottom   key.Binding
-	Open         key.Binding
+	Open         key.Binding // Enter directory or add and play file
+	Add          key.Binding // Enter directory or add file without playing
 	Back         key.Binding
 	ToggleHidden key.Binding
 }
@@ -56,8 +57,12 @@ func DefaultBrowserKeyMap() BrowserKeyMap {
 			key.WithHelp("G", "bottom"),
 		),
 		Open: key.NewBinding(
-			key.WithKeys("enter", "l", "right"),
-			key.WithHelp("enter", "select"),
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "open/play"),
+		),
+		Add: key.NewBinding(
+			key.WithKeys("l", "right"),
+			key.WithHelp("l", "open/add"),
 		),
 		Back: key.NewBinding(
 			key.WithKeys("backspace", "h", "left"),
@@ -145,8 +150,13 @@ func DefaultBrowserStyles() BrowserStyles {
 	}
 }
 
-// FileSelectedMsg is sent when a file is selected.
+// FileSelectedMsg is sent when a file is selected (add to playlist only).
 type FileSelectedMsg struct {
+	Path string
+}
+
+// FilePlayMsg is sent when a file should be added and played immediately.
+type FilePlayMsg struct {
 	Path string
 }
 
@@ -331,6 +341,9 @@ func (b Browser) handleKeyMsg(msg tea.KeyMsg) (Browser, tea.Cmd) {
 	case key.Matches(msg, b.KeyMap.Open):
 		return b.openSelected()
 
+	case key.Matches(msg, b.KeyMap.Add):
+		return b.addSelected()
+
 	case key.Matches(msg, b.KeyMap.Back):
 		return b.goToParent()
 
@@ -421,7 +434,7 @@ func (b *Browser) goToBottom() {
 	}
 }
 
-// openSelected opens the selected entry (file or directory).
+// openSelected opens the selected entry - enters directory or adds and plays file.
 func (b Browser) openSelected() (Browser, tea.Cmd) {
 	if len(b.entries) == 0 {
 		return b, nil
@@ -440,7 +453,32 @@ func (b Browser) openSelected() (Browser, tea.Cmd) {
 		)
 	}
 
-	// File selected - emit FileSelectedMsg
+	// File selected - emit FilePlayMsg (add and play)
+	return b, func() tea.Msg {
+		return FilePlayMsg{Path: entry.Path}
+	}
+}
+
+// addSelected adds the selected entry - enters directory or adds file without playing.
+func (b Browser) addSelected() (Browser, tea.Cmd) {
+	if len(b.entries) == 0 {
+		return b, nil
+	}
+
+	entry := b.entries[b.selected]
+
+	if entry.IsDir {
+		// Enter directory (same as openSelected)
+		b.selected = 0
+		b.min = 0
+		b.max = b.visibleCount() - 1
+		return b, tea.Batch(
+			b.readDir(entry.Path),
+			func() tea.Msg { return DirChangedMsg{Path: entry.Path} },
+		)
+	}
+
+	// File selected - emit FileSelectedMsg (add only, no play)
 	return b, func() tea.Msg {
 		return FileSelectedMsg{Path: entry.Path}
 	}

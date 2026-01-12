@@ -229,8 +229,8 @@ func (h HelpPopup) buildHelpContent() string {
 	addKey("g/G", "Go to top/bottom")
 	addKey("PgUp/Dn", "Page up/down")
 	addKey("Enter/l", "Play selected track")
-	addKey("d", "Remove selected track")
-	addKey("D", "Clear playlist")
+	addKey("d", "Remove track (stops if playing)")
+	addKey("D", "Clear playlist (stops playback)")
 
 	return b.String()
 }

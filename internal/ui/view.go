@@ -297,11 +297,17 @@ func (m Model) renderProgress(width, height int) string {
 		statusStyle = m.styles.StatusStopped
 		statusText = "Stopped"
 		statusIcon = "[]"
+	case StateFading:
+		statusStyle = m.styles.StatusPlaying
+		statusText = "Playing"
+		statusIcon = ">"
 	}
 
-	// Loop info
+	// Loop info (show "Fading..." during fade-out instead of loop count)
 	loopInfo := ""
-	if m.playback.TotalLoops > 0 {
+	if m.playback.State == StateFading {
+		loopInfo = " | Fading..."
+	} else if m.playback.TotalLoops > 0 {
 		loopInfo = fmt.Sprintf(" | Loop %d/%d", m.playback.CurrentLoop+1, m.playback.TotalLoops)
 	}
 

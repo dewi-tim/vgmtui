@@ -20,7 +20,8 @@ type LibBrowserKeyMap struct {
 	PageDown   key.Binding
 	GoToTop    key.Binding
 	GoToBottom key.Binding
-	Enter      key.Binding // Expand/collapse or select
+	Enter      key.Binding // Expand/collapse or select and play
+	Add        key.Binding // Add track to playlist without playing
 	Back       key.Binding // Collapse or go to parent
 	AddAll     key.Binding // Add entire game/system to playlist
 }
@@ -53,8 +54,12 @@ func DefaultLibBrowserKeyMap() LibBrowserKeyMap {
 			key.WithHelp("G", "bottom"),
 		),
 		Enter: key.NewBinding(
-			key.WithKeys("enter", "l", "right"),
-			key.WithHelp("enter", "expand/select"),
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "expand/play"),
+		),
+		Add: key.NewBinding(
+			key.WithKeys("l", "right"),
+			key.WithHelp("l", "expand/add"),
 		),
 		Back: key.NewBinding(
 			key.WithKeys("backspace", "h", "left"),
@@ -335,6 +340,9 @@ func (b LibBrowser) handleKeyMsg(msg tea.KeyMsg) (LibBrowser, tea.Cmd) {
 	case key.Matches(msg, b.keyMap.Enter):
 		return b.handleEnter()
 
+	case key.Matches(msg, b.keyMap.Add):
+		return b.handleAdd()
+
 	case key.Matches(msg, b.keyMap.Back):
 		return b.handleBack()
 
@@ -385,6 +393,52 @@ func (b LibBrowser) handleEnter() (LibBrowser, tea.Cmd) {
 		if node.Track != nil {
 			return b, func() tea.Msg {
 				return LibTrackPlayMsg{Track: *node.Track}
+			}
+		}
+	}
+
+	return b, nil
+}
+
+// handleAdd handles Add key (l/right) - expand folders or add track without playing.
+func (b LibBrowser) handleAdd() (LibBrowser, tea.Cmd) {
+	if len(b.flatList) == 0 || b.selected < 0 || b.selected >= len(b.flatList) {
+		return b, nil
+	}
+
+	node := b.flatList[b.selected]
+
+	switch node.Type {
+	case NodeSystem:
+		// Accordion: collapse all other systems, toggle this one
+		expanding := !node.Expanded
+		for _, sys := range b.root {
+			sys.Expanded = false
+			for _, game := range sys.Children {
+				game.Expanded = false
+			}
+		}
+		node.Expanded = expanding
+		b.rebuildFlatList()
+		return b, nil
+
+	case NodeGame:
+		// Accordion: collapse sibling games, toggle this one
+		expanding := !node.Expanded
+		if node.Parent != nil {
+			for _, sibling := range node.Parent.Children {
+				sibling.Expanded = false
+			}
+		}
+		node.Expanded = expanding
+		b.rebuildFlatList()
+		return b, nil
+
+	case NodeTrack:
+		// Add track to playlist without playing
+		if node.Track != nil {
+			return b, func() tea.Msg {
+				return LibTrackSelectedMsg{Track: *node.Track}
 			}
 		}
 	}

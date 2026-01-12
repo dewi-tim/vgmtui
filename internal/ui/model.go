@@ -27,6 +27,7 @@ const (
 	StateStopped PlayState = iota
 	StatePlaying
 	StatePaused
+	StateFading
 )
 
 // Track is an alias for the components.Track type.
@@ -76,6 +77,11 @@ type Model struct {
 	currentTrack *Track
 	volume       float64 // Volume level (0.0 - 1.0+)
 	trackLoading bool    // True while a playTrack command is in flight
+
+	// Pending playback state (for atomic transitions)
+	// These hold the intended track until playback is confirmed
+	pendingPlayIndex int    // Index in playlist of track being loaded (-1 if none)
+	pendingTrack     *Track // Track being loaded (nil if none)
 
 	// Audio player (nil in TUI-only mode)
 	audioPlayer *player.AudioPlayer
@@ -130,18 +136,19 @@ func NewWithPlayer(ap *player.AudioPlayer) Model {
 	playlist := components.NewPlaylist()
 
 	m := Model{
-		focus:       FocusBrowser,
-		browser:     browser,
-		libBrowser:  libBrowser,
-		lib:         lib,
-		useLibrary:  useLibrary,
-		playlist:    playlist,
-		progress:    components.NewProgressBar(),
-		helpPopup:   components.NewHelpPopup(),
-		keyMap:      DefaultKeyMap(),
-		styles:      DefaultStyles(),
-		audioPlayer: ap,
-		volume:      1.0,
+		focus:            FocusBrowser,
+		browser:          browser,
+		libBrowser:       libBrowser,
+		lib:              lib,
+		useLibrary:       useLibrary,
+		playlist:         playlist,
+		progress:         components.NewProgressBar(),
+		helpPopup:        components.NewHelpPopup(),
+		keyMap:           DefaultKeyMap(),
+		styles:           DefaultStyles(),
+		audioPlayer:      ap,
+		volume:           1.0,
+		pendingPlayIndex: -1, // No pending track
 		playback: PlaybackInfo{
 			State:      StateStopped,
 			TotalLoops: 2,

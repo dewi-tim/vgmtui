@@ -456,3 +456,37 @@ func (p *Playlist) PrevTrack() int {
 	p.updateTableRows()
 	return p.current
 }
+
+// PeekNextTrack returns the index of the next track without modifying state.
+// Returns -1 if at end of playlist or playlist is empty.
+func (p Playlist) PeekNextTrack() int {
+	if len(p.tracks) == 0 {
+		return -1
+	}
+	if p.current < 0 {
+		return 0 // First track if nothing playing
+	}
+	if p.current < len(p.tracks)-1 {
+		return p.current + 1
+	}
+	return -1 // At end of playlist
+}
+
+// PeekPrevTrack returns the index of the previous track without modifying state.
+// Returns -1 if at start of playlist or playlist is empty.
+func (p Playlist) PeekPrevTrack() int {
+	if len(p.tracks) == 0 {
+		return -1
+	}
+	if p.current <= 0 {
+		return -1 // At start of playlist or nothing playing
+	}
+	return p.current - 1
+}
+
+// ClearCurrent clears the current track indicator without stopping playback.
+// Use this when playback ends at the end of the playlist.
+func (p *Playlist) ClearCurrent() {
+	p.current = -1
+	p.updateTableRows()
+}

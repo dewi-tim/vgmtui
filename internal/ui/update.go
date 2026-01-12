@@ -69,6 +69,12 @@ type (
 		Chips []player.ChipInfo
 	}
 
+	// TrackMetadataForPlayMsg is sent when track metadata has been loaded and should play immediately.
+	TrackMetadataForPlayMsg struct {
+		Track Track
+		Chips []player.ChipInfo
+	}
+
 	// ErrorMsg is sent when an error occurs that should be displayed to the user.
 	ErrorMsg struct {
 		Err error
@@ -211,25 +217,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			TrackNumber: msg.Track.TrackNumber,
 		}
 		m.playlist.AddTrack(track)
-		// Set as current and play
+		// Use startPlayingTrack for atomic state transition
 		newIdx := m.playlist.Len() - 1
-		m.playlist.SetCurrentTrack(newIdx)
-		m.currentTrack = &Track{
-			Path:     msg.Track.Path,
-			Title:    msg.Track.Title,
-			Game:     msg.Track.Game,
-			System:   msg.Track.System,
-			Composer: msg.Track.Composer,
-			Duration: msg.Track.Duration,
-		}
-		if m.audioPlayer != nil {
-			m.trackLoading = true
-			return m, playTrack(m.audioPlayer, msg.Track.Path)
+		cmd := m.startPlayingTrack(newIdx)
+		if cmd != nil {
+			return m, cmd
 		}
 		return m, nil
 
 	case components.FileSelectedMsg:
-		// A file was selected in the browser
+		// A file was selected in the browser (add only, no play)
 		if m.audioPlayer != nil {
 			// Load metadata from the real player
 			return m, loadTrackMetadata(msg.Path)
@@ -245,12 +242,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case components.FilePlayMsg:
+		// A file was selected for immediate playback (add and play)
+		if m.audioPlayer != nil && !m.trackLoading {
+			return m, loadTrackMetadataForPlay(msg.Path)
+		}
+		return m, nil
+
 	case TrackMetadataLoadedMsg:
 		// Track metadata has been loaded from the player
-		// Add to playlist and set as current display
+		// Just add to playlist
 		m.playlist.AddTrack(msg.Track)
-		m.currentTrack = &msg.Track
 		m.trackChips = msg.Chips
+		return m, nil
+
+	case TrackMetadataForPlayMsg:
+		// Track metadata loaded and should be played immediately
+		if m.trackLoading {
+			return m, nil
+		}
+		m.playlist.AddTrack(msg.Track)
+		m.trackChips = msg.Chips
+		// Start playing the newly added track
+		newIdx := m.playlist.Len() - 1
+		cmd := m.startPlayingTrack(newIdx)
+		if cmd != nil {
+			return m, cmd
+		}
 		return m, nil
 
 	case components.DirChangedMsg:
@@ -264,7 +282,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PlayerTickMsg:
 		// Update from real audio player
-		wasPlaying := m.playback.State == StatePlaying
+		// Consider both Playing and Fading as "was playing" for auto-advance
+		wasPlaying := m.playback.State == StatePlaying || m.playback.State == StateFading
 		m.playback.Position = msg.Info.Position
 		m.playback.Duration = msg.Info.Duration
 		m.playback.CurrentLoop = msg.Info.CurrentLoop
@@ -285,11 +304,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Check if track ended (was playing, now stopped)
 				if wasPlaying {
 					// Auto-advance to next track
-					return m, func() tea.Msg { return TrackEndedMsg{} }
+					// Also continue listening for updates from the new track
+					batchCmds := []tea.Cmd{func() tea.Msg { return TrackEndedMsg{} }}
+					if m.playerSub != nil {
+						batchCmds = append(batchCmds, listenForPlayback(m.playerSub))
+					}
+					return m, tea.Batch(batchCmds...)
 				}
 			}
 		case player.StateFading:
-			m.playback.State = StatePlaying // Show as playing during fade
+			m.playback.State = StateFading
 		}
 
 		// Continue listening for playback updates
@@ -306,20 +330,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TrackEndedMsg:
 		// Current track finished, try to play next
 		if m.audioPlayer != nil && !m.trackLoading {
-			nextIdx := m.playlist.NextTrack()
+			// Use PeekNextTrack to query without mutating state
+			nextIdx := m.playlist.PeekNextTrack()
 			if nextIdx >= 0 {
-				if track := m.playlist.GetTrack(nextIdx); track != nil {
-					m.currentTrack = track
-					m.trackLoading = true
-					return m, playTrack(m.audioPlayer, track.Path)
+				// Use startPlayingTrack for atomic state transition
+				cmd := m.startPlayingTrack(nextIdx)
+				if cmd != nil {
+					return m, cmd
 				}
 			}
-			// No next track - properly stop the player to clear state
-			m.audioPlayer.Stop()
+			// No next track or failed to start - stop playback and clear state
+			m.stopPlayback()
 		}
-		// Update UI state
-		m.playback.State = StateStopped
-		m.playback.Position = 0
 		return m, nil
 
 	case TickMsg:
@@ -337,18 +359,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.audioPlayer != nil {
-			m.audioPlayer.Stop()
-			nextIdx := m.playlist.NextTrack()
+			// Use PeekNextTrack to query without mutating state
+			nextIdx := m.playlist.PeekNextTrack()
 			if nextIdx >= 0 {
-				if track := m.playlist.GetTrack(nextIdx); track != nil {
-					m.currentTrack = track
-					m.trackLoading = true
-					return m, playTrack(m.audioPlayer, track.Path)
+				// Stop current playback and start next track
+				m.audioPlayer.Stop()
+				cmd := m.startPlayingTrack(nextIdx)
+				if cmd != nil {
+					return m, cmd
 				}
 			}
+			// No next track available - just reset position
+			m.playback.Position = 0
+			m.playback.CurrentLoop = 0
 		}
-		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
 		return m, nil
 
 	case PrevTrackMsg:
@@ -357,18 +381,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.audioPlayer != nil {
-			m.audioPlayer.Stop()
-			prevIdx := m.playlist.PrevTrack()
+			// Use PeekPrevTrack to query without mutating state
+			prevIdx := m.playlist.PeekPrevTrack()
 			if prevIdx >= 0 {
-				if track := m.playlist.GetTrack(prevIdx); track != nil {
-					m.currentTrack = track
-					m.trackLoading = true
-					return m, playTrack(m.audioPlayer, track.Path)
+				// Stop current playback and start previous track
+				m.audioPlayer.Stop()
+				cmd := m.startPlayingTrack(prevIdx)
+				if cmd != nil {
+					return m, cmd
 				}
 			}
+			// No previous track available - just reset position
+			m.playback.Position = 0
+			m.playback.CurrentLoop = 0
 		}
-		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
 		return m, nil
 
 	case StopMsg:
@@ -413,10 +439,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case RemoveFromQueueMsg:
+		// Check if we're removing the currently playing track
+		selectedIdx := m.playlist.SelectedIndex()
+		currentIdx := m.playlist.CurrentIndex()
+		wasPlayingRemoved := selectedIdx == currentIdx && currentIdx >= 0
+
 		m.playlist.RemoveSelected()
+
+		// If we removed the currently playing track, stop playback
+		if wasPlayingRemoved {
+			m.stopPlayback()
+		}
 		return m, nil
 
 	case ClearQueueMsg:
+		// Stop playback before clearing since we're removing all tracks
+		m.stopPlayback()
 		m.playlist.Clear()
 		return m, nil
 
@@ -425,19 +463,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		idx := m.playlist.SelectedIndex()
-		if track := m.playlist.GetTrack(idx); track != nil {
-			m.playlist.SetCurrentTrack(idx)
-			m.currentTrack = track
-			if m.audioPlayer != nil {
-				// Load and play the track
-				m.trackLoading = true
-				return m, playTrack(m.audioPlayer, track.Path)
+		if m.audioPlayer != nil {
+			// Use startPlayingTrack for atomic state transition
+			cmd := m.startPlayingTrack(idx)
+			if cmd != nil {
+				return m, cmd
 			}
-			// Mock mode
-			m.playback.State = StatePlaying
-			m.playback.Position = 0
-			m.playback.Duration = track.Duration
-			m.playback.CurrentLoop = 0
+		} else {
+			// Mock mode - set state directly
+			if track := m.playlist.GetTrack(idx); track != nil {
+				m.playlist.SetCurrentTrack(idx)
+				m.currentTrack = track
+				m.playback.State = StatePlaying
+				m.playback.Position = 0
+				m.playback.Duration = track.Duration
+				m.playback.CurrentLoop = 0
+			}
 		}
 		return m, nil
 
@@ -473,17 +514,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case playTrackResult:
 		// Handle combined result from playTrack command
-		m.trackLoading = false
 		if msg.err != nil {
+			// Playback failed - rollback pending state
+			m.cancelPendingTrack()
 			m.lastError = msg.err.Error()
 			m.errorTime = time.Now()
 			return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 				return ClearErrorMsg{}
 			})
 		}
+		// Playback succeeded - commit pending state
+		m.confirmTrackStarted()
 		if len(msg.chips) > 0 {
 			m.trackChips = msg.chips
 		}
+		// Note: Don't queue listenForPlayback here - it's already queued
+		// from the PlayerTickMsg handler (either in the early return for
+		// auto-advance, or at the end for normal playback)
 		return m, nil
 	}
 
@@ -511,18 +558,20 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.audioPlayer != nil {
-			m.audioPlayer.Stop()
-			nextIdx := m.playlist.NextTrack()
+			// Use PeekNextTrack to query without mutating state
+			nextIdx := m.playlist.PeekNextTrack()
 			if nextIdx >= 0 {
-				if track := m.playlist.GetTrack(nextIdx); track != nil {
-					m.currentTrack = track
-					m.trackLoading = true
-					return m, playTrack(m.audioPlayer, track.Path)
+				// Stop current playback and start next track
+				m.audioPlayer.Stop()
+				cmd := m.startPlayingTrack(nextIdx)
+				if cmd != nil {
+					return m, cmd
 				}
 			}
+			// No next track available - just reset position
+			m.playback.Position = 0
+			m.playback.CurrentLoop = 0
 		}
-		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
 		return m, nil
 
 	case key.Matches(msg, m.keyMap.PrevTrack):
@@ -530,18 +579,20 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.audioPlayer != nil {
-			m.audioPlayer.Stop()
-			prevIdx := m.playlist.PrevTrack()
+			// Use PeekPrevTrack to query without mutating state
+			prevIdx := m.playlist.PeekPrevTrack()
 			if prevIdx >= 0 {
-				if track := m.playlist.GetTrack(prevIdx); track != nil {
-					m.currentTrack = track
-					m.trackLoading = true
-					return m, playTrack(m.audioPlayer, track.Path)
+				// Stop current playback and start previous track
+				m.audioPlayer.Stop()
+				cmd := m.startPlayingTrack(prevIdx)
+				if cmd != nil {
+					return m, cmd
 				}
 			}
+			// No previous track available - just reset position
+			m.playback.Position = 0
+			m.playback.CurrentLoop = 0
 		}
-		m.playback.Position = 0
-		m.playback.CurrentLoop = 0
 		return m, nil
 
 	case key.Matches(msg, m.keyMap.Stop):
@@ -644,24 +695,40 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			idx := m.playlist.SelectedIndex()
-			if track := m.playlist.GetTrack(idx); track != nil {
-				m.playlist.SetCurrentTrack(idx)
-				m.currentTrack = track
-				if m.audioPlayer != nil {
-					m.trackLoading = true
-					return m, playTrack(m.audioPlayer, track.Path)
+			if m.audioPlayer != nil {
+				// Use startPlayingTrack for atomic state transition
+				cmd := m.startPlayingTrack(idx)
+				if cmd != nil {
+					return m, cmd
 				}
-				// Mock mode
-				m.playback.State = StatePlaying
-				m.playback.Position = 0
-				m.playback.Duration = track.Duration
-				m.playback.CurrentLoop = 0
+			} else {
+				// Mock mode - set state directly
+				if track := m.playlist.GetTrack(idx); track != nil {
+					m.playlist.SetCurrentTrack(idx)
+					m.currentTrack = track
+					m.playback.State = StatePlaying
+					m.playback.Position = 0
+					m.playback.Duration = track.Duration
+					m.playback.CurrentLoop = 0
+				}
 			}
 			return m, nil
 		case key.Matches(msg, playlistKeyMap.Remove):
+			// Check if we're removing the currently playing track
+			selectedIdx := m.playlist.SelectedIndex()
+			currentIdx := m.playlist.CurrentIndex()
+			wasPlayingRemoved := selectedIdx == currentIdx && currentIdx >= 0
+
 			m.playlist.RemoveSelected()
+
+			// If we removed the currently playing track, stop playback
+			if wasPlayingRemoved {
+				m.stopPlayback()
+			}
 			return m, nil
 		case key.Matches(msg, playlistKeyMap.Clear):
+			// Stop playback before clearing since we're removing all tracks
+			m.stopPlayback()
 			m.playlist.Clear()
 			return m, nil
 		default:
@@ -690,17 +757,20 @@ func (m Model) togglePlayPause() (tea.Model, tea.Cmd) {
 
 		switch playerState {
 		case player.StateStopped:
-			// If we have a current track, start playing it
-			if m.currentTrack != nil {
-				m.trackLoading = true
-				return m, playTrack(m.audioPlayer, m.currentTrack.Path)
-			}
-			// Otherwise try to play the first track in playlist
-			if track := m.playlist.GetTrack(0); track != nil {
-				m.playlist.SetCurrentTrack(0)
-				m.currentTrack = track
-				m.trackLoading = true
-				return m, playTrack(m.audioPlayer, track.Path)
+			// Try to play current track or first track in playlist
+			currentIdx := m.playlist.CurrentIndex()
+			if currentIdx >= 0 {
+				// Resume from current position in playlist
+				cmd := m.startPlayingTrack(currentIdx)
+				if cmd != nil {
+					return m, cmd
+				}
+			} else {
+				// Start from the first track
+				cmd := m.startPlayingTrack(0)
+				if cmd != nil {
+					return m, cmd
+				}
 			}
 		case player.StatePlaying:
 			m.audioPlayer.Pause()
@@ -728,6 +798,60 @@ func (m Model) togglePlayPause() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// startPlayingTrack initiates playback of a track at the given playlist index.
+// It sets up pending state and returns a command to load and play the track.
+// The pending state will be confirmed or cancelled by playTrackResult handler.
+// Returns nil if the track cannot be found or no audio player is available.
+func (m *Model) startPlayingTrack(playlistIndex int) tea.Cmd {
+	if m.audioPlayer == nil {
+		return nil
+	}
+
+	track := m.playlist.GetTrack(playlistIndex)
+	if track == nil {
+		return nil
+	}
+
+	// Set pending state (will be confirmed on success)
+	m.pendingPlayIndex = playlistIndex
+	m.pendingTrack = track
+	m.trackLoading = true
+
+	return playTrack(m.audioPlayer, track.Path)
+}
+
+// confirmTrackStarted commits the pending playback state after successful load.
+// Call this when playTrackResult indicates success.
+func (m *Model) confirmTrackStarted() {
+	if m.pendingPlayIndex >= 0 && m.pendingTrack != nil {
+		m.playlist.SetCurrentTrack(m.pendingPlayIndex)
+		m.currentTrack = m.pendingTrack
+	}
+	m.trackLoading = false
+	m.pendingPlayIndex = -1
+	m.pendingTrack = nil
+}
+
+// cancelPendingTrack discards the pending playback state after a failed load.
+// The previous track remains "current" in the UI.
+func (m *Model) cancelPendingTrack() {
+	m.trackLoading = false
+	m.pendingPlayIndex = -1
+	m.pendingTrack = nil
+}
+
+// stopPlayback stops the audio player and clears the current track state.
+func (m *Model) stopPlayback() {
+	if m.audioPlayer != nil {
+		m.audioPlayer.Stop()
+	}
+	m.playlist.ClearCurrent()
+	m.currentTrack = nil
+	m.playback.State = StateStopped
+	m.playback.Position = 0
+	m.playback.CurrentLoop = 0
+}
+
 // loadTrackMetadata returns a command that loads track metadata without
 // affecting the current playback state. It uses a separate player instance
 // to read metadata, so it can be called while music is playing.
@@ -741,6 +865,31 @@ func loadTrackMetadata(path string) tea.Cmd {
 
 		// Convert player.Track to components.Track
 		return TrackMetadataLoadedMsg{
+			Track: Track{
+				Path:     track.Path,
+				Title:    defaultString(track.Title, filepath.Base(path)),
+				Game:     track.Game,
+				System:   track.System,
+				Composer: track.Composer,
+				Duration: track.Duration,
+			},
+			Chips: track.Chips,
+		}
+	}
+}
+
+// loadTrackMetadataForPlay returns a command that loads track metadata and
+// signals that the track should be played immediately after adding.
+func loadTrackMetadataForPlay(path string) tea.Cmd {
+	return func() tea.Msg {
+		// Read metadata using a temporary player instance
+		track, err := player.ReadTrackMetadata(path)
+		if err != nil {
+			return ErrorMsg{Err: err}
+		}
+
+		// Convert player.Track to components.Track
+		return TrackMetadataForPlayMsg{
 			Track: Track{
 				Path:     track.Path,
 				Title:    defaultString(track.Title, filepath.Base(path)),
